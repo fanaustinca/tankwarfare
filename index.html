@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
+<title>TankWarfare</title>
+<link rel="stylesheet" href="./css/style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="viewport"></div>
+
+<!-- ══════════════ BUILD MODE UI ══════════════ -->
+<div id="build-ui" class="ui-layer hidden">
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">&#9670;</span>
+      <span class="name">TANK<b>WARFARE</b></span>
+      <span class="sub" id="bay-label">Assembly Bay</span>
+    </div>
+    <div class="stats">
+      <div class="stat accent"><label>Funds</label><span id="s-funds">$0</span></div>
+      <div class="stat"><label>Mass</label><span id="s-weight">0 kg</span></div>
+      <div class="stat"><label>Top Speed</label><span id="s-speed">0.0 m/s</span></div>
+      <div class="stat"><label>Turn Rate</label><span id="s-turn">0&deg;/s</span></div>
+      <div class="stat"><label>Integrity</label><span id="s-hp">0</span></div>
+      <div class="stat"><label>Firepower</label><span id="s-dps">0 dps</span></div>
+    </div>
+  </header>
+
+  <nav class="phases" id="phases">
+    <button class="phase" data-phase="0"><b>1</b><span>Tracks<small>Ground drive</small></span></button>
+    <div class="ph-sep"></div>
+    <button class="phase" data-phase="1"><b>2</b><span>Hull<small>Body blocks</small></span></button>
+    <div class="ph-sep"></div>
+    <button class="phase" data-phase="2"><b>3</b><span>Turrets<small>Weapons</small></span></button>
+  </nav>
+
+  <aside class="palette">
+    <h3 id="palette-title">Track Sections</h3>
+    <div id="palette-list"></div>
+    <div class="tally" id="tally"></div>
+  </aside>
+
+  <aside class="upgrades">
+    <h3>Workshop Upgrades</h3>
+    <div id="upgrade-list"></div>
+  </aside>
+
+  <div class="hint" id="build-hint"></div>
+
+  <footer class="buildbar">
+    <button class="btn ghost" id="btn-quick">&#9889; Quick Build</button>
+    <button class="btn ghost" id="btn-undo">&#8630; Undo</button>
+    <button class="btn ghost danger" id="btn-clear">Clear</button>
+    <div class="layerctl" id="layerctl">
+      <label>Layer</label>
+      <div class="layers"><button data-layer="0">1</button><button data-layer="1">2</button><button data-layer="2">3</button></div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" id="btn-prev">&#9666; Back</button>
+    <button class="btn" id="btn-next">Next Phase &#9656;</button>
+    <button class="btn primary" id="btn-battle" disabled>&#9876; Ready for Battle</button>
+  </footer>
+</div>
+
+<!-- ══════════════ BATTLE MODE UI ══════════════ -->
+<div id="battle-ui" class="ui-layer hidden">
+  <div id="vignette"></div>
+  <div id="hitflash"></div>
+
+  <div id="crosshair"><i class="ch-c"></i><i class="ch-t"></i><i class="ch-b"></i><i class="ch-l"></i><i class="ch-r"></i></div>
+  <div id="hitmarker"></div>
+
+  <div class="hud tl">
+    <div class="hp-block">
+      <div class="hp-row"><label>HULL INTEGRITY</label><span id="b-hp">100%</span></div>
+      <div class="bar"><i id="b-hpbar"></i></div>
+      <div class="parts-row"><span id="b-parts">0 modules</span><span id="b-armor"></span></div>
+    </div>
+  </div>
+
+  <div class="hud tr">
+    <div class="mission">
+      <div class="wave-row"><label>WAVE</label><span id="b-wave">1</span></div>
+      <div class="enemy-row"><label>HOSTILES</label><span id="b-enemies">0</span></div>
+      <div class="score-row"><label>SCORE</label><span id="b-score">0</span></div>
+      <div class="squad-row"><label>SQUAD</label><span id="b-squad">0</span></div>
+    </div>
+    <canvas id="minimap" width="180" height="180"></canvas>
+  </div>
+
+  <div class="hud bl">
+    <div class="gauge">
+      <div class="speed"><span id="b-speed">0</span><small>m/s</small></div>
+      <div class="throttle"><i id="b-throttle"></i></div>
+    </div>
+  </div>
+
+  <div class="hud br">
+    <div id="b-weapons"></div>
+  </div>
+
+  <div id="killfeed"></div>
+  <div id="banner"></div>
+  <div class="hud bc"><div class="controls-hint">WASD drive &middot; MOUSE aim &middot; LMB fire &middot; SPACE brake &middot; <b>1-9</b> assign gunner &middot; <b>T</b> all &middot; B build bay</div></div>
+</div>
+
+<!-- ══════════════ OVERLAYS ══════════════ -->
+<div id="overlay" class="ui-layer">
+  <div class="ov-card" id="ov-start">
+    <div class="ov-mark">&#9670;</div>
+    <h1>TANK<b>WARFARE</b></h1>
+    <p class="tag">Design it. Weld it. Drive it into the fight.</p>
+    <div class="ov-cols">
+      <div><h4>Build</h4><p>Lay tracks, weld a hull, bolt on turrets &mdash; every bolt costs money and every kilo costs speed.</p></div>
+      <div><h4>Battle</h4><p>Third-person combat against AI armour that patrols, flanks and takes cover behind hard terrain.</p></div>
+      <div><h4>Damage</h4><p>Modules take localised hits. Watch them spark, smoke and burn off your chassis.</p></div>
+    </div>
+    <button class="btn primary big" id="btn-start">Enter Assembly Bay</button>
+    <div class="ov-foot">Three.js &middot; WebGL2 &middot; procedural PBR materials</div>
+  </div>
+
+  <div class="ov-card hidden" id="ov-end">
+    <div class="ov-mark" id="end-mark">&#9762;</div>
+    <h1 id="end-title">TANK DESTROYED</h1>
+    <p class="tag" id="end-sub"></p>
+    <div class="ov-stats" id="end-stats"></div>
+    <div class="ov-btns">
+      <button class="btn primary" id="btn-again">Redeploy Same Tank</button>
+      <button class="btn" id="btn-rebuild">Back to Assembly Bay</button>
+    </div>
+  </div>
+</div>
+
+<div id="loader"><div class="ldr-ring"></div><div class="ldr-txt">FABRICATING MATERIALS</div></div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
