@@ -148,7 +148,10 @@ button{font-family:inherit;color:inherit;border:0;background:none;cursor:pointer
 .hud.bl{bottom:22px;left:22px}
 .hud.br{bottom:22px;right:22px}
 .hud.bc{bottom:16px;left:50%;transform:translateX(-50%)}
-.controls-hint{font-family:var(--mono);font-size:10px;color:rgba(190,205,207,.4);letter-spacing:.12em}
+.controls-hint{font-family:var(--mono);font-size:10px;color:rgba(190,205,207,.42);
+  letter-spacing:.1em;white-space:nowrap}
+@media (max-width:1180px){.controls-hint{font-size:9px;letter-spacing:.04em}}
+@media (max-width:900px){.hud.bc{display:none}}
 
 .hp-block{width:280px;background:var(--panel);border:1px solid var(--line);border-radius:10px;
   padding:12px 14px;backdrop-filter:blur(12px)}
