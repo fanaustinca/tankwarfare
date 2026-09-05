@@ -218,11 +218,28 @@ export class Tank {
     yawGroup.add(pitchGroup);
 
     if (!bd.pod) {
+      // size the mantlet off the barrel, not the footprint, so a wide mount
+      // with slim barrels doesn't grow an oversized collar
+      const mantR = Math.max(0.17, bd.rad * 2.3) * (count > 1 ? 1.25 : 1);
       const mantlet = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.19 * scale, 0.22 * scale, 0.34 + 0.22 * scale, 14),
+        new THREE.CylinderGeometry(mantR * 0.9, mantR, 0.30 + 0.18 * scale, 16),
         Assets.mat.barrel);
       mantlet.rotation.z = Math.PI / 2;
+      mantlet.castShadow = true;
       pitchGroup.add(mantlet);
+
+      // recoil cylinders flanking the breech on the heavier guns
+      if (bd.rad > 0.12) {
+        for (const sx of [-1, 1]) {
+          const rc = new THREE.Mesh(
+            new THREE.CylinderGeometry(bd.rad * 0.42, bd.rad * 0.42, bd.len * 0.34, 10),
+            Assets.mat.barrel);
+          rc.rotation.x = Math.PI / 2;
+          rc.position.set(sx * mantR * 0.82, mantR * 0.5, bd.len * 0.20);
+          rc.castShadow = true;
+          pitchGroup.add(rc);
+        }
+      }
     }
 
     const tips = [];

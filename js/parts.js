@@ -110,10 +110,10 @@ export const TURRETS = [
     kind: 'shell', salvo: true, ring: 0.56,
     desc: 'Two shells downrange at once. Heavy mount.' },
 
-  { id: 'tur_siege', name: '155mm Siege Gun', cost: 820, weight: 620, hp: 210, icon: '✹', foot: [2, 2],
-    damage: 400, reload: 3.4, muzzle: 96, spread: 0.008, splash: 9.0, range: 240,
-    barrel: { len: 3.7, rad: 0.175, count: 1, brake: true }, kind: 'shell', ring: 0.78,
-    desc: 'Devastating. Needs a 2×2 hull platform.' },
+  { id: 'tur_siege', name: '155mm Siege Gun', cost: 980, weight: 810, hp: 265, icon: '✹', foot: [3, 3],
+    damage: 480, reload: 3.6, muzzle: 96, spread: 0.007, splash: 10.5, range: 250,
+    barrel: { len: 4.7, rad: 0.215, count: 1, brake: true }, kind: 'shell', ring: 1.15,
+    desc: 'Devastating. Needs a full 3×3 hull platform.' },
 
   { id: 'tur_mis', name: 'Missile Pod', cost: 460, weight: 215, hp: 85, icon: '▲', foot: [1, 1],
     damage: 250, reload: 2.7, muzzle: 52, spread: 0.004, splash: 6.5, range: 230,
@@ -359,11 +359,17 @@ export function enemyBuild(tier = 1, rng = Math.random) {
                  : tier >= 3 ? ['tur_can', 'tur_mis', 'tur_twin']
                  : tier >= 2 ? ['tur_can', 'tur_aut', 'tur_twin']
                  : ['tur_aut', 'tur_can', 'tur_mg_h'];
-  const main = mainPool[(rng() * mainPool.length) | 0];
   const mj = c + j0 + 2;
-  // fall back to a 1×1 gun if the hull is too narrow for the big mount
-  const fits = !placementError(b, 2, c, mj, 0, main);
-  b.turrets.set(key2(c, mj), { i: c, j: mj, type: fits ? main : 'tur_can' });
+  // shuffle the pool, then take the first gun the hull can actually carry
+  const order = [...mainPool].sort(() => rng() - 0.5);
+  order.push('tur_can');
+  let main = 'tur_can', mi = c;
+  for (const id of order) {
+    const [fw] = footOf(ALL_PARTS[id]);
+    const anchor = c - Math.floor((fw - 1) / 2);      // centre a wide mount on the hull
+    if (!placementError(b, 2, anchor, mj, 0, id)) { main = id; mi = anchor; break; }
+  }
+  b.turrets.set(key2(mi, mj), { i: mi, j: mj, type: main });
 
   if (tier >= 2 && rng() < 0.6) {
     const si = c + (rng() < 0.5 ? -1 : 1) * Math.max(1, supW);

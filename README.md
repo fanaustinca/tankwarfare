@@ -38,8 +38,13 @@ Guns occupy a real footprint on the hull, so the big ones have to be designed ar
 | Twin 40mm Flak | 2×1 | Both barrels fire **at once** |
 | 120mm Cannon | 1×1 | The dependable main gun |
 | Double 105mm | 2×1 | Two shells downrange per trigger pull |
-| **155mm Siege Gun** | **2×2** | Devastating; needs a flat 2×2 platform to mount |
+| **155mm Siege Gun** | **3×3** | Devastating; needs a full flat 3×3 platform to mount |
 | Missile Pod | 1×1 | Guided warheads with a wide splash |
+
+The 155mm is the extreme case: it claims nine cells of hull roof, so the whole chassis has to be
+designed around carrying it.
+
+![155mm Siege Gun](docs/siege.png)
 
 ### Workshop upgrades
 
