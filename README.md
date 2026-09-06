@@ -25,6 +25,11 @@ Everything costs money, and every kilogram costs speed. The live readout shows f
 top speed, turn rate, integrity and firepower as you build, so the trade-offs are visible
 while you make them.
 
+Left-click places. The **Delete** tool (or `X`) arms a removal mode: hovering highlights the
+exact piece that will come off in red, and clicking strips it and refunds it. It stays armed
+so you can clear several pieces in a row, and disarms on `Esc` or when you pick a new part.
+Right-click still removes a single piece, and `Ctrl+Z` still steps back through your edits.
+
 ![Build mode](docs/build.png)
 
 ### Turrets take up space

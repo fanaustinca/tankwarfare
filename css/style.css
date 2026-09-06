@@ -26,6 +26,9 @@ button{font-family:inherit;color:inherit;border:0;background:none;cursor:pointer
 .btn.ghost{background:rgba(255,255,255,.03);color:var(--dim)}
 .btn.ghost:hover{color:var(--txt)}
 .btn.danger:hover{border-color:var(--red);color:#ffb3ab;box-shadow:0 0 0 1px rgba(255,77,61,.25)}
+.btn.armed{background:linear-gradient(180deg,#e2483a,#a52a1e);color:#fff;border-color:#ff8a7a;
+  box-shadow:0 4px 18px rgba(226,72,58,.35),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn.armed:hover{border-color:#fff;color:#fff;box-shadow:0 6px 24px rgba(226,72,58,.5)}
 .btn.primary{background:linear-gradient(180deg,#ffb943,#d4820f);color:#1b1205;border-color:#ffcf7a;
   box-shadow:0 4px 20px rgba(255,150,20,.3),inset 0 1px 0 rgba(255,255,255,.5)}
 .btn.primary:hover{box-shadow:0 6px 28px rgba(255,150,20,.5),inset 0 1px 0 rgba(255,255,255,.6);color:#140d02}

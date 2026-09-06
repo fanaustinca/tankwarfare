@@ -19,7 +19,7 @@ import { Save } from './save.js';
 const ORIGIN = { ox: (-GRID / 2 + 0.5) * CELL, oz: (-GRID / 2 + 0.5) * CELL };
 
 const PHASE_HINT = [
-  'Lay <b>tracks</b> to give the chassis drive &mdash; each section must touch the last. <b>LMB</b> place &middot; <b>RMB</b> remove &middot; <b>RMB-drag</b> orbit',
+  'Lay <b>tracks</b> to give the chassis drive &mdash; each section must touch the last. <b>LMB</b> place &middot; <b>Delete</b> tool or <b>RMB</b> to remove',
   'Weld <b>hull blocks</b> beside &mdash; or straight over &mdash; the tracks, then stack upward. <b>1-3</b> layer &middot; <b>scroll</b> zoom',
   'Bolt <b>turrets</b> onto the top of any hull column. <b>R</b> turns a wide mount to fit.',
 ];
@@ -43,6 +43,7 @@ export class BuildMode {
     this.history = [];
     this.hoverCell = null;
     this.rotation = 0;          // 90° steps for non-square turret mounts
+    this.deleteMode = false;
     this.valid = false;
     this.tank = null;
     this.active = false;
@@ -133,6 +134,7 @@ export class BuildMode {
       turn: $('s-turn'), hp: $('s-hp'), dps: $('s-dps'),
       paletteTitle: $('palette-title'), paletteList: $('palette-list'),
       tally: $('tally'), hint: $('build-hint'), layerctl: $('layerctl'), saved: $('saved-dot'),
+      del: $('btn-delete'),
       rotctl: $('rotctl'), rotBtn: $('btn-rotate'), rotSize: $('rot-size'),
       upgrades: $('upgrade-list'),
       battle: $('btn-battle'), next: $('btn-next'), prev: $('btn-prev'),
@@ -146,7 +148,7 @@ export class BuildMode {
     $('btn-next').addEventListener('click', () => this.setPhase(Math.min(2, this.phase + 1)));
     $('btn-prev').addEventListener('click', () => this.setPhase(Math.max(0, this.phase - 1)));
     $('btn-rotate').addEventListener('click', () => this.rotatePending());
-    $('btn-undo').addEventListener('click', () => this.undo());
+    $('btn-delete').addEventListener('click', () => this.toggleDelete());
     $('btn-clear').addEventListener('click', () => {
       const keep = this.build.upgrades;
       this.build = emptyBuild(); this.build.upgrades = keep;   // keep purchased upgrades
@@ -210,6 +212,8 @@ export class BuildMode {
       if (e.key === 'Tab') { e.preventDefault(); this.setPhase((this.phase + 1) % 3); }
       if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey)) this.undo();
       if (e.key.toLowerCase() === 'r') this.rotatePending();
+      if (e.key.toLowerCase() === 'x' || e.key === 'Delete') this.toggleDelete();
+      if (e.key === 'Escape' && this.deleteMode) this.toggleDelete(false);
       if (e.key.toLowerCase() === 'q') this.camAzim -= 0.22;
       if (e.key.toLowerCase() === 'e') this.camAzim += 0.22;
       if (e.key === 'Enter' && this.stats.valid) this.app.startBattle(cloneBuild(this.build));
@@ -217,6 +221,60 @@ export class BuildMode {
   }
 
   // ─────────────── phases & palette ───────────────
+  /** Arm/disarm the delete tool. While armed, left-click strips a piece off. */
+  toggleDelete(on = null) {
+    this.deleteMode = on === null ? !this.deleteMode : on;
+    this.el.del.classList.toggle('armed', this.deleteMode);
+    this.el.del.innerHTML = this.deleteMode ? '&#10005; Deleting&hellip;' : '&#10005; Delete';
+    this.el.hint.innerHTML = this.deleteMode
+      ? '<b>Delete tool armed</b> &mdash; click a piece to strip it off. <b>Esc</b> or click Delete again to stop.'
+      : PHASE_HINT[this.phase];
+    this.ghostMat.opacity = 0.38;
+    this.updateHover();
+    this.app.audio.ui(this.deleteMode ? 0.7 : 1.1);
+  }
+
+  /**
+   * What the delete tool would take off at this cell, without removing it.
+   * remove() gates on this, so the red preview and the actual removal always
+   * agree about whether there is anything there.
+   */
+  findRemovable(i, j) {
+    if (this.phase === 2) {
+      const owner = turretOccupancy(this.build).get(key2(i, j));
+      if (!owner) return null;
+      const t = this.build.turrets.get(owner);
+      const def = ALL_PARTS[t.type];
+      const [fw, fd] = footOf(def, t.rot || 0);
+      const top = topLayer(this.build, t.i, t.j);
+      return {
+        kind: 'turret', name: def.name,
+        x: (t.i + (fw - 1) / 2) * CELL + ORIGIN.ox,
+        z: (t.j + (fd - 1) / 2) * CELL + ORIGIN.oz,
+        y: TRACK_H + BLOCK_H * (top + 1) + 0.28,
+        w: fw * CELL * 0.94, h: 0.55, d: fd * CELL * 0.94,
+      };
+    }
+    if (this.phase === 1) {
+      const k = topLayer(this.build, i, j);
+      if (k < 0) return null;
+      const blk = this.build.blocks.get(key3(i, j, k));
+      return {
+        kind: 'block', name: ALL_PARTS[blk.type].name,
+        x: i * CELL + ORIGIN.ox, z: j * CELL + ORIGIN.oz,
+        y: TRACK_H + BLOCK_H * (k + 0.5),
+        w: CELL * 0.99, h: BLOCK_H, d: CELL * 0.99,
+      };
+    }
+    const trk = this.build.tracks.get(key2(i, j));
+    if (!trk) return null;
+    return {
+      kind: 'track', name: ALL_PARTS[trk.type].name,
+      x: i * CELL + ORIGIN.ox, z: j * CELL + ORIGIN.oz,
+      y: TRACK_H / 2, w: CELL * 0.95, h: TRACK_H, d: CELL,
+    };
+  }
+
   /** Turn a non-square turret mount 90° so it fits a different hull shape. */
   rotatePending() {
     if (this.phase !== 2) return;
@@ -245,6 +303,7 @@ export class BuildMode {
 
   setPhase(p) {
     this.phase = p;
+    if (this.deleteMode) this.toggleDelete(false);
     document.querySelectorAll('.phase').forEach((b) => {
       const n = +b.dataset.phase;
       b.classList.toggle('active', n === p);
@@ -327,6 +386,7 @@ export class BuildMode {
       b.addEventListener('click', () => {
         this.selected[this.phase] = p.id;
         this.rotation = 0;
+        if (this.deleteMode) this.toggleDelete(false);
         this.updateRotUI();
         this.renderPalette();
         this.updateGhostShape();
@@ -339,6 +399,7 @@ export class BuildMode {
   get currentDef() { return ALL_PARTS[this.selected[this.phase]]; }
 
   updateGhostShape() {
+    if (this.deleteMode) return;          // delete mode sizes the ghost per target
     const def = this.currentDef;
     this.ghostBox.geometry.dispose();
     if (this.phase === 0) {
@@ -380,6 +441,28 @@ export class BuildMode {
 
     if (cell.i < 0 || cell.j < 0 || cell.i >= GRID || cell.j >= GRID) { this.hideGhost(); return; }
     this.hoverCell = cell;
+
+    // ── delete tool: preview the exact piece that would come off ──
+    if (this.deleteMode) {
+      const target = this.findRemovable(cell.i, cell.j);
+      this.deleteTarget = target;
+      this.valid = !!target;
+      this.hoverError = target ? null : 'nothing here to remove';
+      if (!target) { this.ghost.visible = false; this.cursor.visible = false; return; }
+      this.ghostBox.geometry.dispose();
+      this.ghostBox.geometry = new THREE.BoxGeometry(target.w, target.h, target.d);
+      this.ghost.position.set(target.x, target.y, target.z);
+      this.ghost.visible = true;
+      this.ghostMat.color.setHex(0xff4d3d);
+      this.ghostMat.emissive.setHex(0x8a2418);
+      this.cursor.position.set(target.x, 0.03, target.z);
+      this.cursor.scale.set(target.w / CELL, 1, target.d / CELL);
+      this.cursor.material.color.setHex(0xff4d3d);
+      this.cursor.visible = true;
+      this.layerPlane.visible = false;
+      return;
+    }
+    this.deleteTarget = null;
 
     const k = this.phase === 1 ? this.layer : 0;
     const err = placementError(this.build, this.phase, cell.i, cell.j, k,
@@ -429,6 +512,7 @@ export class BuildMode {
   }
 
   place() {
+    if (this.deleteMode) { this.remove(); return; }
     if (!this.hoverCell || !this.valid) {
       if (this.hoverError) this.flashHint(this.hoverError);
       this.app.audio.deny();
@@ -456,6 +540,11 @@ export class BuildMode {
   remove() {
     if (!this.hoverCell) return;
     const { i, j } = this.hoverCell;
+    if (!this.findRemovable(i, j)) {
+      if (this.deleteMode) this.flashHint('nothing here to remove');
+      this.app.audio.deny();
+      return;
+    }
     // everything pulled off in one right-click, so undo can put it all back
     const undoBatch = { op: 'remove', items: [] };
     const drop = (map, key) => {
