@@ -10,17 +10,18 @@ import { Tank } from './tank.js';
 import {
   GRID, CELL, TRACK_H, BLOCK_H, MAX_LAYERS, START_FUNDS,
   ALL_PARTS, partsFor, emptyBuild, cloneBuild, quickBuild,
-  key2, key3, topLayer, placementError, computeStats, footOf, turretOccupancy, specOf,
+  key2, key3, topLayer, placementError, computeStats, footOf, canRotate, turretOccupancy, specOf,
   UPGRADES, upgradeCost, emptyUpgrades,
 } from './parts.js';
 import { clamp, smooth, fmt } from './util.js';
+import { Save } from './save.js';
 
 const ORIGIN = { ox: (-GRID / 2 + 0.5) * CELL, oz: (-GRID / 2 + 0.5) * CELL };
 
 const PHASE_HINT = [
   'Lay <b>tracks</b> to give the chassis drive &mdash; each section must touch the last. <b>LMB</b> place &middot; <b>RMB</b> remove &middot; <b>RMB-drag</b> orbit',
-  'Weld <b>hull blocks</b> beside the tracks, then stack upward. <b>1-3</b> switch layer &middot; <b>scroll</b> zoom',
-  'Bolt <b>turrets</b> onto the top of any hull column. Mix guns for range and rate of fire.',
+  'Weld <b>hull blocks</b> beside &mdash; or straight over &mdash; the tracks, then stack upward. <b>1-3</b> layer &middot; <b>scroll</b> zoom',
+  'Bolt <b>turrets</b> onto the top of any hull column. <b>R</b> turns a wide mount to fit.',
 ];
 
 export class BuildMode {
@@ -41,6 +42,7 @@ export class BuildMode {
     this.selected = { 0: 'trk_std', 1: 'blk_lgt', 2: 'tur_can' };
     this.history = [];
     this.hoverCell = null;
+    this.rotation = 0;          // 90° steps for non-square turret mounts
     this.valid = false;
     this.tank = null;
     this.active = false;
@@ -104,6 +106,22 @@ export class BuildMode {
     this.stats = computeStats(this.build);
     this.funds = START_FUNDS + (this.bonusFunds || 0) - this.stats.cost;
     this.updateHUD();
+    this.queueSave();
+  }
+
+  /** Debounced so a burst of placements writes once, not thirty times. */
+  queueSave() {
+    if (!this.stats || (!this.build.tracks.size && !this.build.blocks.size)) return;
+    clearTimeout(this._saveT);
+    this._saveT = setTimeout(() => {
+      if (Save.saveTank(this.build)) this.flashSaved();
+    }, 500);
+  }
+
+  flashSaved() {
+    const el = this.el && this.el.saved;
+    if (!el) return;
+    el.classList.remove('on'); void el.offsetWidth; el.classList.add('on');
   }
 
   // ─────────────── DOM ───────────────
@@ -114,7 +132,8 @@ export class BuildMode {
       funds: $('s-funds'), weight: $('s-weight'), speed: $('s-speed'),
       turn: $('s-turn'), hp: $('s-hp'), dps: $('s-dps'),
       paletteTitle: $('palette-title'), paletteList: $('palette-list'),
-      tally: $('tally'), hint: $('build-hint'), layerctl: $('layerctl'),
+      tally: $('tally'), hint: $('build-hint'), layerctl: $('layerctl'), saved: $('saved-dot'),
+      rotctl: $('rotctl'), rotBtn: $('btn-rotate'), rotSize: $('rot-size'),
       upgrades: $('upgrade-list'),
       battle: $('btn-battle'), next: $('btn-next'), prev: $('btn-prev'),
     };
@@ -126,6 +145,7 @@ export class BuildMode {
 
     $('btn-next').addEventListener('click', () => this.setPhase(Math.min(2, this.phase + 1)));
     $('btn-prev').addEventListener('click', () => this.setPhase(Math.max(0, this.phase - 1)));
+    $('btn-rotate').addEventListener('click', () => this.rotatePending());
     $('btn-undo').addEventListener('click', () => this.undo());
     $('btn-clear').addEventListener('click', () => {
       const keep = this.build.upgrades;
@@ -189,6 +209,7 @@ export class BuildMode {
       }
       if (e.key === 'Tab') { e.preventDefault(); this.setPhase((this.phase + 1) % 3); }
       if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey)) this.undo();
+      if (e.key.toLowerCase() === 'r') this.rotatePending();
       if (e.key.toLowerCase() === 'q') this.camAzim -= 0.22;
       if (e.key.toLowerCase() === 'e') this.camAzim += 0.22;
       if (e.key === 'Enter' && this.stats.valid) this.app.startBattle(cloneBuild(this.build));
@@ -196,6 +217,32 @@ export class BuildMode {
   }
 
   // ─────────────── phases & palette ───────────────
+  /** Turn a non-square turret mount 90° so it fits a different hull shape. */
+  rotatePending() {
+    if (this.phase !== 2) return;
+    if (!canRotate(this.currentDef)) {
+      this.flashHint(`${this.currentDef.name} mount is square — nothing to turn`);
+      this.app.audio.deny();
+      return;
+    }
+    this.rotation = this.rotation ? 0 : 1;
+    this.updateRotUI();
+    this.updateGhostShape();
+    this.updateHover();
+    this.app.audio.ui(this.rotation ? 1.4 : 1.0);
+  }
+
+  updateRotUI() {
+    if (!this.el.rotSize || this.phase !== 2) return;
+    const def = this.currentDef;
+    const [fw, fd] = footOf(def, this.rotation);
+    this.el.rotSize.innerHTML = `${fw}&times;${fd}`;
+    this.el.rotBtn.classList.toggle('locked', !canRotate(def));
+    this.el.rotBtn.classList.toggle('turned', this.rotation === 1);
+    this.el.rotBtn.title = canRotate(def)
+      ? 'Turn the mount 90° (R)' : `${def.name} has a square mount`;
+  }
+
   setPhase(p) {
     this.phase = p;
     document.querySelectorAll('.phase').forEach((b) => {
@@ -207,6 +254,9 @@ export class BuildMode {
       b.classList.toggle('done', done && n !== p);
     });
     this.el.layerctl.classList.toggle('hidden', p !== 1);
+    this.el.rotctl.classList.toggle('hidden', p !== 2);
+    this.rotation = 0;
+    this.updateRotUI();
     this.el.hint.innerHTML = PHASE_HINT[p];
     this.el.next.classList.toggle('gone', p === 2);
     this.el.prev.classList.toggle('gone', p === 0);
@@ -276,6 +326,8 @@ export class BuildMode {
         <div class="p-spec">${specOf(p).map(([k, v]) => `<span><i>${k}</i> ${v}</span>`).join('')}</div>`;
       b.addEventListener('click', () => {
         this.selected[this.phase] = p.id;
+        this.rotation = 0;
+        this.updateRotUI();
         this.renderPalette();
         this.updateGhostShape();
         this.app.audio.ui(1.0);
@@ -294,7 +346,7 @@ export class BuildMode {
     } else if (this.phase === 1) {
       this.ghostBox.geometry = new THREE.BoxGeometry(CELL * 0.98, BLOCK_H, CELL * 0.98);
     } else {
-      const [fw, fd] = footOf(def);
+      const [fw, fd] = footOf(def, this.rotation);
       this.ghostBox.geometry = new THREE.BoxGeometry(fw * CELL * 0.92, 0.46, fd * CELL * 0.92);
     }
   }
@@ -330,7 +382,8 @@ export class BuildMode {
     this.hoverCell = cell;
 
     const k = this.phase === 1 ? this.layer : 0;
-    const err = placementError(this.build, this.phase, cell.i, cell.j, k, this.selected[this.phase]);
+    const err = placementError(this.build, this.phase, cell.i, cell.j, k,
+      this.selected[this.phase], this.rotation);
     const def = this.currentDef;
     const afford = def.cost <= this.funds;
     this.valid = !err && afford;
@@ -348,7 +401,7 @@ export class BuildMode {
     // a multi-cell gun previews over the centre of the platform it would claim
     let gx = x, gz = z;
     if (this.phase === 2) {
-      const [fw, fd] = footOf(def);
+      const [fw, fd] = footOf(def, this.rotation);
       gx += (fw - 1) * CELL * 0.5;
       gz += (fd - 1) * CELL * 0.5;
     }
@@ -356,7 +409,7 @@ export class BuildMode {
     this.ghost.visible = true;
     this.cursor.position.set(gx, 0.03, gz);
     if (this.phase === 2) {
-      const [fw, fd] = footOf(def);
+      const [fw, fd] = footOf(def, this.rotation);
       this.cursor.scale.set(fw, 1, fd);
     } else this.cursor.scale.set(1, 1, 1);
     this.cursor.visible = true;
@@ -371,6 +424,7 @@ export class BuildMode {
     this.ghost.visible = false;
     this.cursor.visible = false;
     this.hoverCell = null;
+    this.rotation = 0;          // 90° steps for non-square turret mounts
     this.valid = false;
   }
 
@@ -390,7 +444,7 @@ export class BuildMode {
       this.build.blocks.set(key3(i, j, k), { i, j, k, type });
       this.history.push({ op: 'add', phase: 1, key: key3(i, j, k) });
     } else {
-      this.build.turrets.set(key2(i, j), { i, j, type });
+      this.build.turrets.set(key2(i, j), { i, j, type, rot: this.rotation });
       this.history.push({ op: 'add', phase: 2, key: key2(i, j) });
     }
     this.rebuild();
@@ -438,7 +492,7 @@ export class BuildMode {
   pruneUnsupported(drop) {
     for (const [k, t] of [...this.build.turrets]) {
       this.build.turrets.delete(k);
-      if (!placementError(this.build, 2, t.i, t.j, 0, t.type)) { this.build.turrets.set(k, t); continue; }
+      if (!placementError(this.build, 2, t.i, t.j, 0, t.type, t.rot || 0)) { this.build.turrets.set(k, t); continue; }
       if (drop) { this.build.turrets.set(k, t); drop(this.build.turrets, k); }   // record for undo
     }
   }

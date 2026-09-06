@@ -72,8 +72,12 @@ export class AITank {
     this.skill = clamp(0.42 + tier * 0.11, 0.4, 0.92);
     this.reactionDelay = lerp(0.85, 0.18, this.skill);
     this.aimError = lerp(0.075, 0.014, this.skill);
-    this.preferredRange = rand(28, 62) - tier * 3;
+    this.preferredRange = rand(22, 48) - tier * 2;
     this.strafeDir = chance(0.5) ? 1 : -1;
+    this.unstickTimer = 0;
+    this.unstickDir = 1;
+    this._lodTick = 0;
+    this._acc = 0;
   }
 
   get pos() { return this.tank.pos; }
@@ -85,11 +89,11 @@ export class AITank {
    * the far side of the map forever and stall the wave.
    */
   _patrolWaypoint() {
-    if (this.foe && this.distToFoe > 55) {
+    if (this.foe && this.distToFoe > 26) {
       const to = _v.subVectors(this.foe.pos, this.pos).normalize();
       const side = _v2.set(-to.z, 0, to.x).multiplyScalar(rand(-22, 22));
       const p = new THREE.Vector3().copy(this.pos)
-        .addScaledVector(to, Math.min(this.distToFoe - 25, 70)).add(side);
+        .addScaledVector(to, Math.min(this.distToFoe - 25, 95)).add(side);
       p.y = heightAt(p.x, p.z);
       return p;
     }
@@ -119,7 +123,7 @@ export class AITank {
     if (!best) { this.hasLOS = false; this.alertness = Math.max(0, this.alertness - dt * 0.4); return; }
 
     const blocked = this.battle.field.blocked(this.pos, best.pos);
-    this.hasLOS = !blocked && bestD < 145;
+    this.hasLOS = !blocked && bestD < 190;
 
     if (this.hasLOS) {
       this.losTimer += dt;
@@ -150,7 +154,7 @@ export class AITank {
         if (hpFrac < 0.34 && chance(dt * 0.9)) { this._setState(STATE.COVER); break; }
         // lost sight for a while → go hunt the last known position
         if (!this.hasLOS && this.alertness > 0.1 && this.stateTime > 2.2) { this._setState(STATE.FLANK); break; }
-        if (this.alertness < 0.06) { this._setState(STATE.PATROL); break; }
+        if (this.alertness < 0.06 && this.distToFoe > 90) { this._setState(STATE.PATROL); break; }
         // shuffle position periodically so it isn't a static target
         if (this.stateTime > rand(4, 8)) { this._setState(STATE.REPOSITION); break; }
         break;
@@ -204,14 +208,38 @@ export class AITank {
   // ─────────────── driving ───────────────
   _drive(dt) {
     const t = this.tank;
+
+    // ── wedged against terrain: reverse out and pick a new line ──
+    if (this.unstickTimer > 0) {
+      this.unstickTimer -= dt;
+      this.throttleInput = -1;
+      this.steerInput = this.unstickDir;
+      if (this.unstickTimer <= 0) {
+        this.waypoint = this._randomWaypoint();
+        t.stuckTime = 0;
+        this.stateTime = 0;
+      }
+      return;
+    }
+    if ((t.stuckTime || 0) > 1.1) {
+      this.unstickTimer = rand(0.8, 1.6);
+      this.unstickDir = chance(0.5) ? 1 : -1;
+      this.throttleInput = -1;
+      this.steerInput = this.unstickDir;
+      return;
+    }
+
     let goal;
 
     if (this.state === STATE.ENGAGE && this.foe) {
-      // hold a standoff band around the target and strafe across it
+      // hold a standoff band around the target and strafe across it — but if the
+      // ground is masking the target, close until the shot opens up
       const to = _v.subVectors(this.foe.pos, this.pos).normalize();
-      const side = _v2.set(-to.z, 0, to.x).multiplyScalar(this.strafeDir * 16);
+      const masked = !this.hasLOS;
+      const stand = masked ? Math.min(this.preferredRange, 14) : this.preferredRange;
+      const side = _v2.set(-to.z, 0, to.x).multiplyScalar(this.strafeDir * (masked ? 6 : 16));
       goal = new THREE.Vector3().copy(this.foe.pos)
-        .addScaledVector(to, -this.preferredRange).add(side);
+        .addScaledVector(to, -stand).add(side);
       goal.y = heightAt(goal.x, goal.z);
       if (chance(dt * 0.22)) this.strafeDir *= -1;
     } else if (this.state === STATE.COVER) {

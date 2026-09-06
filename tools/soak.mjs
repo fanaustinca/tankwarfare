@@ -25,8 +25,13 @@ const chunk = (secs) => page.evaluate((secs)=>{
         const want=Math.atan2(dx,dz);
         let d=(want-p.yaw)%(Math.PI*2);
         if(d>Math.PI)d-=Math.PI*2; if(d<-Math.PI)d+=Math.PI*2;
-        b.keys.KeyA = d<-0.08; b.keys.KeyD = d>0.08;
-        b.keys.KeyW = nd>28;
+        // steering sign matches the game (yaw+ turns toward screen-left)
+        b.keys.KeyA = d>0.08; b.keys.KeyD = d<-0.08;
+        b.keys.KeyW = nd>28; b.keys.KeyS = false;
+        // back out when wedged, the way a player would
+        if ((p.stuckTime||0) > 1.0) {
+          b.keys.KeyW=false; b.keys.KeyS=true; b.keys.KeyA=true; b.keys.KeyD=false;
+        }
       }
     }
     b.update(dt);

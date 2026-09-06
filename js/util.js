@@ -23,9 +23,13 @@ export function turnToward(a, b, max) {
 
 // ─────────────── value noise / fbm (deterministic) ───────────────
 function hash2(i, j) {
-  let n = (i * 374761393 + j * 668265263) | 0;
-  n = (n ^ (n >> 13)) * 1274126177;
-  return ((n ^ (n >> 16)) >>> 0) / 4294967295;
+  // Math.imul keeps the multiply exactly 32-bit, and the shifts must be
+  // UNSIGNED: with `>>` the sign bit cancels itself in the final xor, which
+  // capped this hash at 0.5 and quietly halved every noise amplitude.
+  let n = (Math.imul(i, 374761393) + Math.imul(j, 668265263)) | 0;
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  n = (n ^ (n >>> 16)) >>> 0;
+  return n / 4294967296;
 }
 
 export function vnoise(x, y) {

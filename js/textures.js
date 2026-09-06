@@ -81,16 +81,28 @@ export function armourSet(o = {}) {
       const grain  = fbm(u * 110, v * 110, 3);
       const grime  = fbm(u * 3 + 11, v * 3 + 7, 5);
 
-      // recessed panel seams
-      const sx = Math.abs((x % panel) / panel - 0.5);
-      const sy = Math.abs((y % panel) / panel - 0.5);
-      const seam = clamp((Math.max(sx, sy) - 0.455) / 0.045, 0, 1);
+      // recessed panel seams, wobbled slightly so they aren't laser-straight
+      const wob = (fbm(u * 14, v * 14, 2) - 0.5) * 0.035;
+      const sx = Math.abs((x % panel) / panel - 0.5 + wob);
+      const sy = Math.abs((y % panel) / panel - 0.5 + wob);
+      const seamRaw = Math.max(sx, sy);
+      const seam = clamp((seamRaw - 0.455) / 0.045, 0, 1);
+      // a raised weld bead running alongside each seam
+      const weld = clamp(1 - Math.abs(seamRaw - 0.425) / 0.022, 0, 1)
+                 * (0.55 + fbm(u * 130, v * 130, 2) * 0.9);
 
-      // rivets at panel intersections
+      // hex bolt heads at the panel intersections
       const gx = Math.round(x / panel) * panel;
       const gy = Math.round(y / panel) * panel;
-      const rd = Math.hypot(x - gx, y - gy);
-      const rivet = rd < 3.4 ? Math.cos((rd / 3.4) * Math.PI * 0.5) : 0;
+      const bx = x - gx, by = y - gy;
+      const rd = Math.hypot(bx, by);
+      // hexagonal falloff rather than a circle — reads as a fastener, not a dot
+      const hex = Math.max(Math.abs(bx) * 0.866 + Math.abs(by) * 0.5, Math.abs(by));
+      const rivet = hex < 3.2 ? Math.cos((hex / 3.2) * Math.PI * 0.5) : 0;
+      const boltRing = rd > 3.2 && rd < 4.1 ? 0.35 : 0;
+
+      // fine brushed grain, aligned so plates catch the light directionally
+      const brush = fbm(u * 24, v * 320, 2) * 0.5;
 
       // directional scratches exposing bare metal
       const scr = ridge(u * 4 + 3, v * 190, 2);
@@ -100,11 +112,14 @@ export function armourSet(o = {}) {
       const chip = wear * seam * clamp((fbm(u * 60, v * 60, 2) - 0.55) / 0.25, 0, 1);
       const bare = clamp(scratch + chip, 0, 1);
 
-      h[idx] = 0.5 + mottle * 0.10 + grain * 0.05 - seam * 0.45 + rivet * 0.55 - bare * 0.06;
+      h[idx] = 0.5 + mottle * 0.10 + grain * 0.05 + brush * 0.03
+             - seam * 0.48 + weld * 0.30 + rivet * 0.55 - boltRing * 0.12 - bare * 0.06;
 
       // ── albedo ──
-      let shade = 0.72 + mottle * 0.42 + grain * 0.10;
-      shade *= 1 - seam * 0.42;              // seams read darker
+      let shade = 0.72 + mottle * 0.42 + grain * 0.10 + brush * 0.06;
+      shade *= 1 - seam * 0.52;              // cavity shading in the seams
+      shade *= 1 - boltRing * 0.30;
+      shade *= 1 + weld * 0.10;              // proud weld catches light
       shade *= 1 - grime * 0.22 * wear;      // dirt accumulation
       let r = br * shade, g = bg * shade, b = bb * shade;
       // dust/rust tint in the low-lying grime
@@ -121,7 +136,8 @@ export function armourSet(o = {}) {
       ai.data[ii + 3] = 255;
 
       // ── roughness: painted steel is rough, bare scratches are polished ──
-      let rough = 0.58 + grain * 0.30 + grime * 0.18 * wear - bare * 0.42 - rivet * 0.12;
+      let rough = 0.58 + grain * 0.30 + grime * 0.18 * wear
+                - bare * 0.42 - rivet * 0.12 + weld * 0.16 + brush * 0.10;
       rough = clamp(rough, 0.08, 0.98) * 255;
       ri.data[ii] = ri.data[ii + 1] = ri.data[ii + 2] = rough; ri.data[ii + 3] = 255;
 
@@ -136,7 +152,7 @@ export function armourSet(o = {}) {
     map: toTexture(alb, { srgb: true }),
     roughnessMap: toTexture(rgh),
     metalnessMap: toTexture(mtl),
-    normalMap: toTexture(normalFromHeight(h, size, 2.6)),
+    normalMap: toTexture(normalFromHeight(h, size, 3.0)),
   };
 }
 
@@ -201,13 +217,18 @@ export function groundSet(size = 512) {
       const pebble = fbm(u * 150, v * 150, 2);
       const crack  = clamp((ridge(u * 12, v * 12, 3) - 0.86) / 0.14, 0, 1);
       const patch  = fbm(u * 2.2 + 30, v * 2.2 + 12, 3);
+      // wind-blown ripples, the strongest visual cue that this is sand
+      const ripple = Math.sin((u * 26 + fbm(u * 4, v * 4, 3) * 5) * Math.PI * 2) * 0.5 + 0.5;
+      const rippleMask = clamp(fbm(u * 3 + 60, v * 3 + 9, 3) * 1.6 - 0.35, 0, 1);
 
-      h[idx] = coarse * 0.5 + fine * 0.3 + pebble * 0.2 - crack * 0.5;
+      h[idx] = coarse * 0.5 + fine * 0.3 + pebble * 0.2 - crack * 0.5
+             + ripple * rippleMask * 0.22;
 
       // dry cracked earth → dusty sand, with sparse scrub patches
-      let r = lerp(0.30, 0.46, coarse) + fine * 0.10 + pebble * 0.06;
-      let g = lerp(0.25, 0.38, coarse) + fine * 0.09 + pebble * 0.06;
-      let b = lerp(0.17, 0.25, coarse) + fine * 0.06 + pebble * 0.05;
+      const rip = ripple * rippleMask * 0.07;
+      let r = lerp(0.30, 0.46, coarse) + fine * 0.10 + pebble * 0.06 + rip;
+      let g = lerp(0.25, 0.38, coarse) + fine * 0.09 + pebble * 0.06 + rip * 0.92;
+      let b = lerp(0.17, 0.25, coarse) + fine * 0.06 + pebble * 0.05 + rip * 0.7;
       const scrub = clamp((patch - 0.60) / 0.24, 0, 1) * 0.7;
       r = lerp(r, 0.20, scrub); g = lerp(g, 0.24, scrub); b = lerp(b, 0.13, scrub);
       r *= 1 - crack * 0.45; g *= 1 - crack * 0.45; b *= 1 - crack * 0.45;
@@ -223,10 +244,30 @@ export function groundSet(size = 512) {
   }
   ac.putImageData(ai, 0, 0); rc.putImageData(ri, 0, 0);
   return {
-    map: toTexture(alb, { srgb: true, repeat: 42 }),
-    roughnessMap: toTexture(rgh, { repeat: 42 }),
-    normalMap: toTexture(normalFromHeight(h, size, 1.4), { repeat: 42 }),
+    map: toTexture(alb, { srgb: true, repeat: 90, aniso: 16 }),
+    roughnessMap: toTexture(rgh, { repeat: 90, aniso: 16 }),
+    normalMap: toTexture(normalFromHeight(h, size, 1.8), { repeat: 90, aniso: 16 }),
+    macro: macroTexture(),
   };
+}
+
+/**
+ * Very low-frequency greyscale used to modulate the ground at map scale.
+ * Without it a 90× repeat reads as obvious tiling from a distance.
+ */
+function macroTexture(size = 256) {
+  const c = cv(size), ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const u = x / size, v = y / size;
+    const n = fbm(u * 3, v * 3, 4) * 0.65 + fbm(u * 9 + 21, v * 9 + 5, 3) * 0.35;
+    const i = (y * size + x) * 4;
+    const s = clamp(0.55 + (n - 0.5) * 0.95, 0, 1) * 255;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = s;
+    img.data[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return toTexture(c, { repeat: 1 });
 }
 
 // ─────────────── rock / concrete for cover objects ───────────────

@@ -124,7 +124,17 @@ export const TURRETS = [
 export const ALL_PARTS = {};
 for (const p of [...TRACKS, ...BLOCKS, ...TURRETS]) ALL_PARTS[p.id] = p;
 export const partsFor = (phase) => (phase === 0 ? TRACKS : phase === 1 ? BLOCKS : TURRETS);
-export const footOf = (def) => (def && def.foot) || [1, 1];
+/** Footprint in cells, optionally turned 90° on the mount. */
+export function footOf(def, rot = 0) {
+  const [w, d] = (def && def.foot) || [1, 1];
+  return rot ? [d, w] : [w, d];
+}
+
+/** Only a non-square mount has anything to gain from being turned. */
+export function canRotate(def) {
+  const [w, d] = (def && def.foot) || [1, 1];
+  return w !== d;
+}
 
 /** Palette stat chips, derived from the live numbers so they can never drift. */
 export function specOf(p) {
@@ -176,15 +186,15 @@ export function turretOccupancy(build, skipKey = null) {
   const occ = new Map();
   for (const [k, t] of build.turrets) {
     if (k === skipKey) continue;
-    const [w, d] = footOf(ALL_PARTS[t.type]);
+    const [w, d] = footOf(ALL_PARTS[t.type], t.rot || 0);
     for (let a = 0; a < w; a++) for (let b = 0; b < d; b++) occ.set(key2(t.i + a, t.j + b), k);
   }
   return occ;
 }
 
 /** The cells a turret of `type` anchored at (i,j) would cover. */
-export function footCells(type, i, j) {
-  const [w, d] = footOf(ALL_PARTS[type]);
+export function footCells(type, i, j, rot = 0) {
+  const [w, d] = footOf(ALL_PARTS[type], rot);
   const out = [];
   for (let a = 0; a < w; a++) for (let b = 0; b < d; b++) out.push({ i: i + a, j: j + b });
   return out;
@@ -194,7 +204,7 @@ export function footCells(type, i, j) {
  * Can a piece be placed here? Returns null when legal, else a reason string.
  * `type` matters in phase 2, where big guns need a flat multi-cell platform.
  */
-export function placementError(build, phase, i, j, k, type) {
+export function placementError(build, phase, i, j, k, type, rot = 0) {
   if (i < 0 || j < 0 || i >= GRID || j >= GRID) return 'outside the deck';
   if (phase === 0) {
     if (build.tracks.has(key2(i, j))) return 'track already here';
@@ -210,10 +220,12 @@ export function placementError(build, phase, i, j, k, type) {
   if (phase === 1) {
     if (build.blocks.has(key3(i, j, k))) return 'block already here';
     if (k === 0) {
-      if (build.tracks.has(key2(i, j))) return 'cannot build on top of a track';
+      // a plate directly over a tread section is supported by it — this is how
+      // you armour over the running gear or roof a track run
+      if (build.tracks.has(key2(i, j))) return null;
       for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]])
         if (build.tracks.has(key2(i + di, j + dj)) || build.blocks.has(key3(i + di, j + dj, 0))) return null;
-      return 'layer 1 must sit beside the tracks';
+      return 'layer 1 must sit beside or over the tracks';
     }
     if (!build.blocks.has(key3(i, j, k - 1))) return 'nothing underneath';
     return null;
@@ -221,11 +233,11 @@ export function placementError(build, phase, i, j, k, type) {
 
   // ── phase 2: turrets, footprint aware ──
   const def = ALL_PARTS[type];
-  const [w, d] = footOf(def);
+  const [w, d] = footOf(def, rot);
   const anchorTop = topLayer(build, i, j);
   if (anchorTop < 0) return 'turrets need hull below';
   const occ = turretOccupancy(build);
-  for (const c of footCells(type, i, j)) {
+  for (const c of footCells(type, i, j, rot)) {
     if (c.i >= GRID || c.j >= GRID) return `needs a ${w}×${d} platform`;
     if (occ.has(key2(c.i, c.j))) return 'another turret is in the way';
     const t = topLayer(build, c.i, c.j);
@@ -238,12 +250,12 @@ export function placementError(build, phase, i, j, k, type) {
 /** Drop any turret whose supporting platform no longer exists. */
 export function pruneTurrets(build) {
   for (const [k, t] of [...build.turrets]) {
-    if (placementError(build, 2, t.i, t.j, 0, t.type) &&
+    if (placementError(build, 2, t.i, t.j, 0, t.type, t.rot || 0) &&
         turretOccupancy(build, k).size >= 0) {
       // re-test ignoring itself, so a legal turret is never pruned
       const saved = build.turrets.get(k);
       build.turrets.delete(k);
-      if (placementError(build, 2, t.i, t.j, 0, t.type)) continue;   // still illegal → stays removed
+      if (placementError(build, 2, t.i, t.j, 0, t.type, t.rot || 0)) continue;   // still illegal → stays removed
       build.turrets.set(k, saved);
     }
   }
@@ -363,19 +375,25 @@ export function enemyBuild(tier = 1, rng = Math.random) {
   // shuffle the pool, then take the first gun the hull can actually carry
   const order = [...mainPool].sort(() => rng() - 0.5);
   order.push('tur_can');
-  let main = 'tur_can', mi = c;
+  let main = 'tur_can', mi = c, mrot = 0;
+  outer:
   for (const id of order) {
-    const [fw] = footOf(ALL_PARTS[id]);
-    const anchor = c - Math.floor((fw - 1) / 2);      // centre a wide mount on the hull
-    if (!placementError(b, 2, anchor, mj, 0, id)) { main = id; mi = anchor; break; }
+    // try the mount both ways round before giving up on a gun
+    for (const rot of (canRotate(ALL_PARTS[id]) ? [0, 1] : [0])) {
+      const [fw] = footOf(ALL_PARTS[id], rot);
+      const anchor = c - Math.floor((fw - 1) / 2);    // centre a wide mount on the hull
+      if (!placementError(b, 2, anchor, mj, 0, id, rot)) {
+        main = id; mi = anchor; mrot = rot; break outer;
+      }
+    }
   }
-  b.turrets.set(key2(mi, mj), { i: mi, j: mj, type: main });
+  b.turrets.set(key2(mi, mj), { i: mi, j: mj, type: main, rot: mrot });
 
   if (tier >= 2 && rng() < 0.6) {
     const si = c + (rng() < 0.5 ? -1 : 1) * Math.max(1, supW);
     const sj = c + j0 + len - 2;
     const sec = rng() < 0.5 ? 'tur_mg_l' : 'tur_mg_h';
-    if (!placementError(b, 2, si, sj, 0, sec)) b.turrets.set(key2(si, sj), { i: si, j: sj, type: sec });
+    if (!placementError(b, 2, si, sj, 0, sec)) b.turrets.set(key2(si, sj), { i: si, j: sj, type: sec, rot: 0 });
   }
   return b;
 }

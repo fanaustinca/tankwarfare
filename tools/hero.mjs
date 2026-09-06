@@ -1,0 +1,28 @@
+import { chromium } from 'playwright';
+const browser = await chromium.launch({ args:['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader'] });
+const page = await browser.newPage({ viewport:{width:1440,height:810} });
+page.on('pageerror',e=>console.log('[PAGEERROR]',e.message));
+await page.goto('http://localhost:8099/index.html');
+await page.waitForFunction(()=>document.getElementById('loader')?.classList.contains('hidden'),{timeout:180000});
+await page.click('#btn-start'); await page.waitForTimeout(400);
+await page.evaluate(()=>{ window.TW.money(9000); window.TW.preset(); window.TW.upgrade(2); });
+await page.waitForTimeout(900);
+await page.evaluate(()=>{ const b=window.__app.build; b.camTargetDist=20; b.camElev=0.95; b.camAzim=0.55; });
+await page.waitForTimeout(1000);
+await page.screenshot({path:'docs/build.png'});
+await page.click('#btn-battle'); await page.waitForTimeout(2500);
+await page.evaluate(()=>{
+  const b=window.__app.battle;
+  b.allies.forEach((a,i)=>{ const A=i? -1:1; a.tank.pos.set(A*17,0,9); a.tank.yaw=0.15*A; });
+  b.enemies.forEach((e,i)=>{ e.tank.pos.set((i-0.5)*40,0,78); e.tank.yaw=Math.PI; e.alertness=1; });
+  b.camPitch=0.14; b.camYaw=0; b.camTargetDist=13;
+  b.player.turrets.forEach((t,i)=>t.mode = i===0?'manual':'auto');
+  b.firing=true;
+});
+await page.waitForTimeout(2600);
+await page.screenshot({path:'docs/battle.png'});
+await page.evaluate(()=>{ const b=window.__app.battle; b.firing=false; b.camPitch=0.45; b.camTargetDist=26; });
+await page.waitForTimeout(1400);
+await page.screenshot({path:'docs/terrain.png'});
+console.log('done');
+await browser.close();

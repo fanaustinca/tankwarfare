@@ -9,6 +9,7 @@ import { Assets, teamTint } from './assets.js';
 import { ALL_PARTS, CELL, TRACK_H, BLOCK_H, buildBounds, computeStats, topLayer, key2, footOf,
   upgradeMultipliers, emptyUpgrades } from './parts.js';
 import { clamp, turnToward, angleDelta } from './util.js';
+import { heightAt } from './world.js';
 
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -95,10 +96,56 @@ export class Tank {
       : Assets.mat.tread;
 
     // ── tracks ──
+    // Flood-fill the track cells into connected runs. Each run is a separate
+    // bogie that carries its own suspension, so a tank with two side treads
+    // articulates independently over rough ground.
+    const runOf = new Map();
+    {
+      const cells = [...b.tracks.values()];
+      const at = new Map(cells.map((c) => [key2(c.i, c.j), c]));
+      let runId = 0;
+      for (const c of cells) {
+        const ck = key2(c.i, c.j);
+        if (runOf.has(ck)) continue;
+        const stack = [c];
+        runOf.set(ck, runId);
+        while (stack.length) {
+          const cur = stack.pop();
+          for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nk = key2(cur.i + di, cur.j + dj);
+            if (at.has(nk) && !runOf.has(nk)) { runOf.set(nk, runId); stack.push(at.get(nk)); }
+          }
+        }
+        runId++;
+      }
+      this.runCount = runId;
+    }
+
+    this.trackRuns = [];
+    for (let r = 0; r < (this.runCount || 0); r++) {
+      const members = [...b.tracks.values()].filter((t) => runOf.get(key2(t.i, t.j)) === r);
+      let sx = 0, sz = 0, minJ = 1e9, maxJ = -1e9;
+      for (const m of members) {
+        sx += m.i; sz += m.j;
+        if (m.j < minJ) minJ = m.j;
+        if (m.j > maxJ) maxJ = m.j;
+      }
+      const grp = new THREE.Group();
+      grp.position.set((sx / members.length) * CELL + ox, 0, (sz / members.length) * CELL + oz);
+      this.group.add(grp);
+      this.trackRuns.push({
+        group: grp, mods: [],
+        cx: grp.position.x, cz: grp.position.z,
+        halfLen: Math.max(0.6, (maxJ - minJ + 1) * CELL * 0.5),
+        y: 0, pitch: 0, vy: 0,
+      });
+    }
+
     for (const t of b.tracks.values()) {
       const def = ALL_PARTS[t.type];
+      const run = this.trackRuns[runOf.get(key2(t.i, t.j))];
       const g = new THREE.Group();
-      g.position.set(t.i * CELL + ox, TRACK_H / 2, t.j * CELL + oz);
+      g.position.set(t.i * CELL + ox - run.cx, TRACK_H / 2, t.j * CELL + oz - run.cz);
 
       const shoe = new THREE.Mesh(rbox(CELL * 0.94, TRACK_H, CELL * 0.99, 0.09), treadMat);
       shoe.castShadow = shoe.receiveShadow = true;
@@ -107,14 +154,15 @@ export class Tank {
       // road wheel peeking through the tread
       const isEnd = !b.tracks.has(key2(t.i, t.j - 1)) || !b.tracks.has(key2(t.i, t.j + 1));
       const wheel = new THREE.Mesh(isEnd ? Assets.geo.sprocket : Assets.geo.wheel, Assets.mat.wheel);
-      wheel.position.y = 0.02;
-      wheel.castShadow = true;
+      wheel.position.y = 0.02;   // small parts skip shadow casting — pure cost, no read
       g.add(wheel);
 
       g.userData.cell = t; g.userData.kind = 'track';
-      this.group.add(g);
+      run.group.add(g);
       const mod = new Module('track', g, def, t, this.mul.hp);
       mod.wheel = wheel;
+      mod.run = run;
+      run.mods.push(mod);
       this.modules.push(mod);
       this.tracks.push(mod);
     }
@@ -158,18 +206,20 @@ export class Tank {
     // ── turrets ──
     for (const t of b.turrets.values()) {
       const def = ALL_PARTS[t.type];
-      const [fw, fd] = footOf(def);
+      const rot = t.rot || 0;
+      const [fw, fd] = footOf(def, rot);
       const k = topLayer(b, t.i, t.j);
       const baseY = TRACK_H + BLOCK_H * (k + 1);
       // a multi-cell gun sits at the centre of the platform it occupies
       const cx = t.i + (fw - 1) / 2;
       const cz = t.j + (fd - 1) / 2;
-      const tur = this._makeTurret(def, tint);
-      tur.yawGroup.position.set(cx * CELL + ox, baseY, cz * CELL + oz);
-      tur.yawGroup.userData.cell = t; tur.yawGroup.userData.kind = 'turret';
-      this.group.add(tur.yawGroup);
+      const tur = this._makeTurret(def, tint, rot);
+      tur.mount.position.set(cx * CELL + ox, baseY, cz * CELL + oz);
+      tur.origin = tur.mount.position.clone();
+      tur.mount.userData.cell = t; tur.mount.userData.kind = 'turret';
+      this.group.add(tur.mount);
 
-      const mod = new Module('turret', tur.yawGroup, def, t, this.mul.hp);
+      const mod = new Module('turret', tur.mount, def, t, this.mul.hp);
       mod.turret = tur;
       tur.module = mod;
       this.modules.push(mod);
@@ -177,26 +227,42 @@ export class Tank {
     }
   }
 
-  _makeTurret(def, tint) {
-    const yawGroup = new THREE.Group();
+  _makeTurret(def, tint, rot = 0) {
+    const mount = new THREE.Group();        // bolted to the hull, does not traverse
+    const yawGroup = new THREE.Group();     // the gun itself, traverses freely
     const gunMat = tint !== undefined ? teamTint(Assets.mat.gun, tint) : Assets.mat.gun;
-    const [fw, fd] = footOf(def);
+    const [fw, fd] = footOf(def, rot);
     const bd = def.barrel;
     const count = bd.count || 1;
     const scale = Math.max(fw, fd);          // bigger footprint = physically bigger gun
+
+    // ── bed plate: shows exactly which cells the mount claims ──
+    const PLATE_H = 0.13;
+    if (fw > 1 || fd > 1) {
+      const plate = new THREE.Mesh(
+        rbox(fw * CELL * 0.95, PLATE_H, fd * CELL * 0.95, 0.04), gunMat);
+      plate.position.y = PLATE_H / 2;
+      plate.castShadow = plate.receiveShadow = true;
+      mount.add(plate);
+    }
+    yawGroup.position.y = (fw > 1 || fd > 1) ? PLATE_H : 0;
+    mount.add(yawGroup);
 
     // ── ring / base ──
     const ringR = def.ring || 0.42;
     const ring = new THREE.Mesh(
       new THREE.CylinderGeometry(ringR, ringR * 1.08, 0.10, 22), Assets.mat.barrel);
-    ring.position.y = 0.05; ring.castShadow = true;
+    ring.position.y = 0.05;
     yawGroup.add(ring);
 
     // ── body sized to the footprint ──
+    // body proportions come from the gun's own size, so turning the mount
+    // doesn't turn the turret into a different shape
+    const [gw, gd] = footOf(def, 0);
     const bodyH = 0.34 + scale * 0.10;
     let bodyGeo;
     if (bd.pod) bodyGeo = rbox(0.86, 0.44, 0.72, 0.06);
-    else bodyGeo = rbox(fw * 0.82 + 0.14, bodyH, fd * 0.86 + 0.24, 0.08);
+    else bodyGeo = rbox(gw * 0.82 + 0.14, bodyH, gd * 0.86 + 0.24, 0.08);
     const body = new THREE.Mesh(bodyGeo, gunMat);
     const bodyY = 0.10 + bodyH / 2;
     body.position.y = bodyY;
@@ -206,15 +272,15 @@ export class Tank {
     // heavy mounts get a rear counterweight / bustle
     if (scale > 1 || def.kind === 'shell') {
       const bustle = new THREE.Mesh(
-        rbox(fw * 0.62 + 0.10, bodyH * 0.62, 0.36, 0.05), gunMat);
-      bustle.position.set(0, bodyY + 0.02, -(fd * 0.43 + 0.28));
+        rbox(gw * 0.62 + 0.10, bodyH * 0.62, 0.36, 0.05), gunMat);
+      bustle.position.set(0, bodyY + 0.02, -(gd * 0.43 + 0.28));
       bustle.castShadow = true;
       yawGroup.add(bustle);
     }
 
     // ── elevating mantlet + barrels ──
     const pitchGroup = new THREE.Group();
-    pitchGroup.position.set(0, bodyY, bd.pod ? 0.18 : fd * 0.30 + 0.10);
+    pitchGroup.position.set(0, bodyY, bd.pod ? 0.18 : gd * 0.30 + 0.10);
     yawGroup.add(pitchGroup);
 
     if (!bd.pod) {
@@ -298,7 +364,7 @@ export class Tank {
     yawGroup.add(optic);
 
     return {
-      def, yawGroup, pitchGroup, tips, tipIndex: 0,
+      def, mount, yawGroup, pitchGroup, tips, tipIndex: 0, rot,
       yaw: 0, pitch: 0, cooldown: 0, heat: 0, dead: false,
       recoil: 0, recoilBase: pitchGroup.position.z,
       salvo: !!def.salvo,
@@ -316,8 +382,8 @@ export class Tank {
     // world → chassis-local so turret yaw is relative to the hull
     _v.copy(target);
     this.group.worldToLocal(_v);
-    _v2.copy(t.yawGroup.position);
-    const dx = _v.x - _v2.x, dz = _v.z - _v2.z, dy = _v.y - (_v2.y + 0.33);
+    _v2.copy(t.origin || t.yawGroup.position);
+    const dx = _v.x - _v2.x, dz = _v.z - _v2.z, dy = _v.y - (_v2.y + 0.45);
     const wantYaw = Math.atan2(dx, dz);
     const horiz = Math.hypot(dx, dz);
     const wantPitch = clamp(-Math.atan2(dy, horiz), -0.32, 0.20);
@@ -489,6 +555,59 @@ export class Tank {
   syncTransform() {
     this.group.position.copy(this.pos);
     this.group.rotation.set(this.pitch, this.yaw, this.roll, 'YXZ');
+  }
+
+  /**
+   * Independent suspension per track run.
+   * Each run samples the ground under its own front and back, then rides to
+   * that height with a damped spring — so a tank straddling a rock leans on
+   * it, and a dead track sags instead of floating.
+   */
+  updateSuspension(dt) {
+    if (!this.trackRuns || !this.trackRuns.length) return;
+    const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
+    const TRAVEL = 0.42;                    // metres of articulation either way
+
+    for (const run of this.trackRuns) {
+      // run centre and its fore/aft contact patches, in world space
+      const wx = this.pos.x + (run.cx * cy + run.cz * sy);
+      const wz = this.pos.z + (-run.cx * sy + run.cz * cy);
+      const fx = wx + sy * run.halfLen, fz = wz + cy * run.halfLen;
+      const bx = wx - sy * run.halfLen, bz = wz - cy * run.halfLen;
+
+      const hF = heightAt(fx, fz), hB = heightAt(bx, bz);
+      const ground = Math.max(hF, hB) * 0.5 + Math.min(hF, hB) * 0.5;
+
+      // where the run wants to sit relative to the hull
+      let want = ground - this.pos.y;
+      const dead = run.mods.length && run.mods.every((m) => m.dead);
+      if (dead) want -= 0.22;               // a wrecked run drops off its torsion bars
+      want = clamp(want, -TRAVEL, TRAVEL);
+
+      // critically-damped spring, so it settles without wobbling
+      const k = 130, c = 21;
+      run.vy += (want - run.y) * k * dt - run.vy * c * dt;
+      run.vy = clamp(run.vy, -14, 14);
+      run.y = clamp(run.y + run.vy * dt, -TRAVEL * 1.3, TRAVEL * 1.3);
+
+      // pitch the bogie to match the slope it is actually sitting on
+      const wantPitch = clamp(Math.atan2(hB - hF, run.halfLen * 2) - this.pitch, -0.30, 0.30);
+      run.pitch += (wantPitch - run.pitch) * Math.min(1, 9 * dt);
+
+      run.group.position.y = run.y;
+      run.group.rotation.x = run.pitch;
+    }
+  }
+
+  /**
+   * Shadow casting is re-rendered for every caster each frame. A full wave of
+   * tanks is hundreds of meshes, so distant ones stop casting — at that range
+   * their shadow is a few pixels.
+   */
+  setShadowCasting(on) {
+    if (this._shadowOn === on) return;
+    this._shadowOn = on;
+    this.group.traverse((o) => { if (o.isMesh && o.castShadow !== undefined) o.castShadow = on; });
   }
 
   /** Spin road wheels with travel — cheap but reads as motion. */

@@ -6,27 +6,31 @@
 // ───────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Assets, applyEnv } from './assets.js';
-import { fbm, rand, clamp } from './util.js';
+import { fbm, rand, randInt, clamp } from './util.js';
 import { GRID, CELL } from './parts.js';
 
-export const ARENA = 230;           // playable half-extent * 2
-const TERRAIN_SEG = 180;
+export const ARENA = 560;           // full width of the battlefield in metres
+const TERRAIN_SEG = 260;            // ~2.15 m per quad
 
 /** Shared terrain height field — physics and geometry read the same function. */
 export function heightAt(x, z) {
-  const h =
-    fbm(x * 0.0075 + 40, z * 0.0075 + 17, 4) * 5.4 +
-    fbm(x * 0.019 + 71, z * 0.019 + 23, 3) * 2.4 +
-    fbm(x * 0.031 + 3, z * 0.031 + 9, 3) * 1.1;
-  // flatten the very centre so the deployment zone is drivable
+  // Frequencies are chosen against the value-noise lattice: too low and the
+  // whole map samples inside a single cell, which reads as dead flat.
+  let h = fbm(x * 0.0062 + 40, z * 0.0062 + 17, 4) * 30;                     // hills, ~160 m across
+  h += (1 - Math.abs(fbm(x * 0.0115 + 9, z * 0.0115 + 3, 3) * 2 - 1)) * 13;  // ridge lines
+  h += fbm(x * 0.030 + 71, z * 0.030 + 23, 3) * 4.5;                         // rolling ground
+  h += fbm(x * 0.088 + 3, z * 0.088 + 9, 2) * 1.1;                           // surface detail
+  h -= 24;
+  // flatten the deployment zone so you always start on drivable ground
   const d = Math.hypot(x, z);
-  const flat = clamp((d - 14) / 22, 0, 1);
-  return (h - 4.4) * flat;
+  const flat = clamp((d - 22) / 34, 0, 1);
+  return h * flat;
 }
 
 export function terrainNormal(x, z, out = new THREE.Vector3()) {
@@ -71,6 +75,9 @@ export class Battlefield {
     this.scene = new THREE.Scene();
     this.obstacles = [];
     this.renderer = renderer;
+    this._scratchA = []; this._scratchB = []; this._scratchC = [];
+    this._rockGeos = [];
+    this._queryStamp = 0;
 
     const sunDir = new THREE.Vector3();
     const elev = THREE.MathUtils.degToRad(90 - 38);   // mid-afternoon: long shadows, no glare
@@ -116,7 +123,7 @@ export class Battlefield {
     pmrem.dispose();
     applyEnv(envRT.texture);
 
-    this.scene.fog = new THREE.FogExp2(0xb4ac97, 0.0019);   // warm dust haze
+    this.scene.fog = new THREE.FogExp2(0xb4ac97, 0.0011);   // warm dust haze
 
     // ── lights ──
     const sun = new THREE.DirectionalLight(0xfff2dc, 4.0);
@@ -124,8 +131,8 @@ export class Battlefield {
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     const s = sun.shadow.camera;
-    s.left = -55; s.right = 55; s.top = 55; s.bottom = -55;
-    s.near = 1; s.far = 260;
+    s.left = -78; s.right = 78; s.top = 78; s.bottom = -78;
+    s.near = 1; s.far = 340;
     sun.shadow.bias = -0.0006;
     sun.shadow.normalBias = 0.035;
     this.scene.add(sun);
@@ -155,106 +162,176 @@ export class Battlefield {
     this.terrain = mesh;
   }
 
+  /**
+   * Records an obstacle for physics and queues its geometry for merging.
+   * Rocks are static, so drawing them individually cost one call each — a few
+   * hundred calls for scenery alone. Nothing outside construction needs the
+   * per-rock mesh, only pos/radius/height.
+   */
   _addObstacle(mesh, radius, height, kind) {
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    this.scene.add(mesh);
-    const o = { mesh, radius, height, kind, pos: mesh.position.clone() };
+    mesh.updateMatrix();
+    const geo = mesh.geometry.clone().applyMatrix4(mesh.matrix);
+    this._rockGeos.push(geo);
+    mesh.geometry.dispose();
+    const o = { radius, height, kind, pos: mesh.position.clone() };
     this.obstacles.push(o);
     return o;
   }
 
+  /** Merge the queued rock geometry into a handful of batched meshes. */
+  _flushRocks(batchSize = 40) {
+    for (let i = 0; i < this._rockGeos.length; i += batchSize) {
+      const slice = this._rockGeos.slice(i, i + batchSize);
+      const merged = mergeGeometries(slice, false);
+      if (!merged) continue;
+      merged.computeBoundingSphere();
+      const m = new THREE.Mesh(merged, Assets.mat.rock);
+      m.castShadow = m.receiveShadow = true;
+      this.scene.add(m);
+      for (const g of slice) g.dispose();
+    }
+    this._rockGeos.length = 0;
+  }
+
+  /**
+   * Cover is entirely natural rock now — big boulders, slabs and spires,
+   * grouped into fields with open ground between them so there are real
+   * approach lanes rather than a scatter of crates.
+   */
   _buildProps() {
-    const half = ARENA / 2 - 18;
-    const place = (minR, maxR) => {
-      for (let tries = 0; tries < 30; tries++) {
+    const half = ARENA / 2 - 30;
+    const clear = 30;                       // keep the deployment zone open
+
+    const tryPlace = (r) => {
+      for (let n = 0; n < 40; n++) {
         const x = rand(-half, half), z = rand(-half, half);
-        if (Math.hypot(x, z) < 16) continue;          // keep spawn clear
+        if (Math.hypot(x, z) < clear + r) continue;
         let ok = true;
         for (const o of this.obstacles) {
-          if (Math.hypot(o.pos.x - x, o.pos.z - z) < o.radius + maxR + 3) { ok = false; break; }
+          if (Math.hypot(o.pos.x - x, o.pos.z - z) < o.radius + r + 5) { ok = false; break; }
         }
         if (ok) return { x, z };
       }
       return null;
     };
 
-    // boulders
-    for (let i = 0; i < 34; i++) {
-      const p = place(2, 5); if (!p) continue;
-      const r = rand(1.6, 4.2);
+    /** One rock. `kind` shapes it: rounded boulder, flat slab or tall spire. */
+    const rock = (x, z, r, kind, seed) => {
       const geo = new THREE.IcosahedronGeometry(r, 1);
       const pa = geo.attributes.position;
+      const yScale = kind === 'spire' ? rand(1.6, 2.4) : kind === 'slab' ? rand(0.32, 0.5) : rand(0.68, 0.95);
       for (let v = 0; v < pa.count; v++) {
-        const n = fbm(pa.getX(v) * 0.9 + 5, pa.getZ(v) * 0.9 + i, 3);
-        const sc = 0.72 + n * 0.6;
-        pa.setXYZ(v, pa.getX(v) * sc, pa.getY(v) * sc * 0.72, pa.getZ(v) * sc);
+        const n = fbm(pa.getX(v) * 0.55 + seed, pa.getZ(v) * 0.55 + seed * 1.7, 4);
+        const sc = 0.66 + n * 0.72;
+        pa.setXYZ(v, pa.getX(v) * sc, pa.getY(v) * sc * yScale, pa.getZ(v) * sc);
       }
       geo.computeVertexNormals();
       const m = new THREE.Mesh(geo, Assets.mat.rock);
-      m.position.set(p.x, heightAt(p.x, p.z) + r * 0.30, p.z);
-      m.rotation.set(rand(-0.2, 0.2), rand(0, 6.28), rand(-0.2, 0.2));
-      this._addObstacle(m, r * 0.85, r * 1.1, 'rock');
+      const h = r * yScale;
+      m.position.set(x, heightAt(x, z) + h * 0.32, z);
+      m.rotation.set(rand(-0.14, 0.14), rand(0, 6.28), rand(-0.14, 0.14));
+      return this._addObstacle(m, r * 0.82, h * 1.3, 'rock');
+    };
+
+    // ── rock fields: a big anchor stone with smaller companions around it ──
+    for (let f = 0; f < 26; f++) {
+      const anchorR = rand(6, 15);
+      const p = tryPlace(anchorR);
+      if (!p) continue;
+      const kind = Math.random() < 0.22 ? 'spire' : Math.random() < 0.3 ? 'slab' : 'boulder';
+      rock(p.x, p.z, anchorR, kind, f);
+
+      const companions = randInt(2, 5);
+      for (let c = 0; c < companions; c++) {
+        const a = rand(0, Math.PI * 2);
+        const cr = anchorR * rand(0.32, 0.62);
+        const dist = anchorR + cr + rand(2, 12);
+        const cx = p.x + Math.cos(a) * dist, cz = p.z + Math.sin(a) * dist;
+        if (Math.hypot(cx, cz) < clear) continue;
+        if (Math.abs(cx) > half + 20 || Math.abs(cz) > half + 20) continue;
+        rock(cx, cz, cr, Math.random() < 0.3 ? 'slab' : 'boulder', f * 10 + c);
+      }
     }
 
-    // concrete blast walls — the AI's favourite cover
-    for (let i = 0; i < 16; i++) {
-      const p = place(3, 7); if (!p) continue;
-      const w = rand(5, 11), h = rand(2.2, 3.6), d = rand(0.8, 1.3);
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), Assets.mat.concrete);
-      m.position.set(p.x, heightAt(p.x, p.z) + h / 2 - 0.2, p.z);
-      m.rotation.y = rand(0, Math.PI * 2);
-      this._addObstacle(m, Math.max(w, d) * 0.5, h, 'wall');
+    // ── lone landmarks scattered between the fields ──
+    for (let i = 0; i < 34; i++) {
+      const r = rand(3.5, 9);
+      const p = tryPlace(r);
+      if (!p) continue;
+      rock(p.x, p.z, r, Math.random() < 0.28 ? 'spire' : 'boulder', 200 + i);
     }
 
-    // bunkers / ruined structures
-    for (let i = 0; i < 9; i++) {
-      const p = place(4, 8); if (!p) continue;
-      const grp = new THREE.Group();
-      const w = rand(6, 10), h = rand(3, 4.6), d = rand(5, 9);
-      const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), Assets.mat.concrete);
-      body.position.y = h / 2;
-      body.castShadow = body.receiveShadow = true;
-      grp.add(body);
-      const roof = new THREE.Mesh(new THREE.BoxGeometry(w * 1.14, 0.5, d * 1.14), Assets.mat.concrete);
-      roof.position.y = h + 0.25;
-      roof.castShadow = roof.receiveShadow = true;
-      grp.add(roof);
-      grp.position.set(p.x, heightAt(p.x, p.z) - 0.3, p.z);
-      grp.rotation.y = rand(0, Math.PI * 2);
-      this._addObstacle(grp, Math.max(w, d) * 0.55, h, 'bunker');
-    }
+    this._flushRocks();
+    this._buildObstacleGrid();
+  }
 
-    // scattered crates for visual density (still solid)
-    for (let i = 0; i < 22; i++) {
-      const p = place(1, 3); if (!p) continue;
-      const s = rand(0.9, 1.7);
-      const m = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), Assets.mat.rock);
-      m.position.set(p.x, heightAt(p.x, p.z) + s / 2, p.z);
-      m.rotation.y = rand(0, 6.28);
-      this._addObstacle(m, s * 0.62, s, 'crate');
+  /**
+   * Uniform spatial grid over the obstacles. Collision and line-of-sight run
+   * every frame for every vehicle, so scanning all of them was the single
+   * hottest loop once the map grew.
+   */
+  _buildObstacleGrid() {
+    this.gridCell = 48;
+    this.gridMap = new Map();
+    const key = (cx, cz) => cx + ',' + cz;
+    for (const o of this.obstacles) {
+      const r = o.radius;
+      const i0 = Math.floor((o.pos.x - r) / this.gridCell), i1 = Math.floor((o.pos.x + r) / this.gridCell);
+      const j0 = Math.floor((o.pos.z - r) / this.gridCell), j1 = Math.floor((o.pos.z + r) / this.gridCell);
+      for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+        const k = key(i, j);
+        if (!this.gridMap.has(k)) this.gridMap.set(k, []);
+        this.gridMap.get(k).push(o);
+      }
     }
+  }
+
+  /** Obstacles whose grid cells overlap a circle, de-duplicated by stamp. */
+  _near(x, z, radius, out) {
+    out.length = 0;
+    const stamp = ++this._queryStamp;
+    const c = this.gridCell;
+    const i0 = Math.floor((x - radius) / c), i1 = Math.floor((x + radius) / c);
+    const j0 = Math.floor((z - radius) / c), j1 = Math.floor((z + radius) / c);
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+      const bucket = this.gridMap.get(i + ',' + j);
+      if (!bucket) continue;
+      for (let n = 0; n < bucket.length; n++) {
+        const o = bucket[n];
+        if (o._stamp === stamp) continue;    // O(1) dedupe instead of a scan
+        o._stamp = stamp;
+        out.push(o);
+      }
+    }
+    return out;
   }
 
   _buildBoundary() {
     // a ring of berms marking the edge of the engagement area
-    const R = ARENA / 2 - 4;
-    const seg = 92;
-    const grp = new THREE.Group();
+    const R = ARENA / 2 - 8;
+    const seg = 150;
+    const geos = [];
     for (let i = 0; i < seg; i++) {
       const a = (i / seg) * Math.PI * 2;
       const x = Math.cos(a) * R, z = Math.sin(a) * R;
-      const r = rand(3.4, 5.6);
+      const r = rand(7, 13);
       const geo = new THREE.IcosahedronGeometry(r, 0);
-      const m = new THREE.Mesh(geo, Assets.mat.rock);
-      m.position.set(x, heightAt(x, z) + r * 0.15, z);
+      const m = new THREE.Object3D();
+      m.position.set(x, heightAt(x, z) + r * 0.10, z);
       m.rotation.set(rand(0, 3), rand(0, 6.28), rand(0, 3));
       m.scale.set(1, 0.85, 1);
-      m.castShadow = m.receiveShadow = true;
-      grp.add(m);
+      m.updateMatrix();
+      geos.push(geo.applyMatrix4(m.matrix));
     }
-    this.scene.add(grp);
-    this.boundaryR = R - 5;
+    const ring = mergeGeometries(geos, false);
+    for (const g of geos) g.dispose();
+    if (ring) {
+      ring.computeBoundingSphere();
+      const mesh = new THREE.Mesh(ring, Assets.mat.rock);
+      mesh.castShadow = mesh.receiveShadow = true;
+      this.scene.add(mesh);
+    }
+    this.boundaryR = R - 10;
   }
 
   /** Keep the shadow frustum tight around the player. */
@@ -266,7 +343,7 @@ export class Battlefield {
   /** Circle-vs-obstacle resolution. Mutates `pos`, returns true if it hit. */
   resolveCollision(pos, radius) {
     let hit = false;
-    for (const o of this.obstacles) {
+    for (const o of this._near(pos.x, pos.z, radius + 2, this._scratchA)) {
       const dx = pos.x - o.pos.x, dz = pos.z - o.pos.z;
       const d = Math.hypot(dx, dz);
       const min = o.radius + radius;
@@ -287,13 +364,38 @@ export class Battlefield {
     return hit;
   }
 
-  /** True if the segment a→b is blocked by an obstacle (used for AI line of sight). */
+  /**
+   * Terrain occlusion: does the ground itself rise above the sight line?
+   * Without this, crews happily "see" through hills and fire shells into the
+   * slope in front of them — which is exactly what happened once the map
+   * gained real relief.
+   */
+  terrainBlocks(a, b, eye = 1.4) {
+    const ax = a.x, az = a.z, bx = b.x, bz = b.z;
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 4) return false;
+    const ay = heightAt(ax, az) + eye;
+    const by = heightAt(bx, bz) + eye;
+    const steps = Math.min(24, Math.max(6, Math.round(len / 12)));
+    for (let s = 1; s < steps; s++) {
+      const t = s / steps;
+      const x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+      const sight = ay + (by - ay) * t;
+      if (heightAt(x, z) > sight + 0.6) return true;
+    }
+    return false;
+  }
+
+  /** True if the segment a→b is blocked by cover or by the terrain itself. */
   blocked(a, b, ignoreLow = true) {
+    if (this.terrainBlocks(a, b)) return true;
     const dx = b.x - a.x, dz = b.z - a.z;
     const len = Math.hypot(dx, dz);
     if (len < 0.001) return false;
     const ux = dx / len, uz = dz / len;
-    for (const o of this.obstacles) {
+    // only test obstacles whose grid cells the ray actually crosses
+    const mx = (a.x + b.x) * 0.5, mz = (a.z + b.z) * 0.5;
+    for (const o of this._near(mx, mz, len * 0.5 + 20, this._scratchB)) {
       if (ignoreLow && o.height < 1.4) continue;
       const px = o.pos.x - a.x, pz = o.pos.z - a.z;
       let t = px * ux + pz * uz;
@@ -307,7 +409,7 @@ export class Battlefield {
   /** Nearest obstacle that would break line of sight from `threat`. */
   findCover(from, threat, maxDist = 45) {
     let best = null, bestScore = Infinity;
-    for (const o of this.obstacles) {
+    for (const o of this._near(from.x, from.z, maxDist, this._scratchC)) {
       if (o.height < 1.8 || o.radius < 1.5) continue;
       const d = Math.hypot(o.pos.x - from.x, o.pos.z - from.z);
       if (d > maxDist) continue;

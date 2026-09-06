@@ -10,6 +10,8 @@ import { AITank } from './ai.js';
 import { FX } from './fx.js';
 import { Assets } from './assets.js';
 import { clamp, smooth, rand, chance } from './util.js';
+import { Save } from './save.js';
+import { Ads } from './ads.js';
 
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -146,8 +148,11 @@ export class BattleMode {
     });
     addEventListener('mousemove', (e) => {
       if (!this.active || document.pointerLockElement !== dom) return;
-      this.camYaw -= e.movementX * 0.0022;
-      this.camPitch = clamp(this.camPitch + e.movementY * 0.0019, -0.30, 0.62);
+      const s = this.app.settings;
+      const sens = s.sensitivity || 1;
+      this.camYaw -= e.movementX * 0.0022 * sens * (s.invertX ? -1 : 1);
+      this.camPitch = clamp(
+        this.camPitch + e.movementY * 0.0019 * sens * (s.invertY ? -1 : 1), -0.30, 0.62);
     });
     dom.addEventListener('wheel', (e) => {
       if (!this.active) return;
@@ -181,7 +186,9 @@ export class BattleMode {
       get alive() { return !self.player.destroyed; },
     };
 
-    this.wave = 0;
+    // a resume point set from the bay starts the run partway through the ladder
+    this.wave = Math.max(0, (this.resumeWave || 1) - 1);
+    this.resumeWave = 0;
     this.score = 0;
     this.kills = 0;
     this.time = 0;
@@ -228,7 +235,7 @@ export class BattleMode {
   spawnAllies(count = this.allyCount, tier = null) {
     const t = tier ?? Math.max(1, Math.min(3, Math.floor(this.wave / 2) + 1));
     for (let i = 0; i < count; i++) {
-      const a = rand(0, Math.PI * 2), r = rand(9, 17);
+      const a = rand(0, Math.PI * 2), r = rand(11, 22);
       const p = new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r)
         .add(this.player ? this.player.pos : new THREE.Vector3());
       this.allies.push(new AITank(this, t, p, 'blue'));
@@ -242,7 +249,8 @@ export class BattleMode {
     const tier = 1 + Math.floor((this.wave - 1) / 2);
     for (let i = 0; i < count; i++) {
       const a = rand(0, Math.PI * 2);
-      const r = rand(52, Math.min(115, this.field.boundaryR * 0.9));
+      // close enough to make contact quickly, far enough to need a manoeuvre
+      const r = rand(55, Math.min(70 + this.wave * 12, 150));
       const p = new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r);
       this.enemies.push(new AITank(this, Math.min(4, tier + (chance(0.25) ? 1 : 0)), p, 'red'));
     }
@@ -307,6 +315,7 @@ export class BattleMode {
     t.pos.addScaledVector(fwd, t.speed * dt);
 
     const hit = this.field.resolveCollision(t.pos, t.radius);
+    let jammed = false;
     if (hit) {
       const moved = _v3.subVectors(t.pos, before).length();
       if (moved < Math.abs(t.speed) * dt * 0.35) {
@@ -316,7 +325,15 @@ export class BattleMode {
           this.shake = Math.max(this.shake, 0.12);
         }
         t.speed *= 0.25;
+        jammed = true;
       }
+    }
+    // a unit asking for drive but going nowhere is wedged; the AI uses this to
+    // back out, otherwise it can sit against a boulder forever and stall the wave
+    if (jammed || (Math.abs(throttle) > 0.3 && Math.abs(t.speed) < 0.6)) {
+      t.stuckTime = (t.stuckTime || 0) + dt;
+    } else {
+      t.stuckTime = Math.max(0, (t.stuckTime || 0) - dt * 2.5);
     }
 
     // terrain following
@@ -342,6 +359,7 @@ export class BattleMode {
     if (t.recoil > 0) t.recoil = Math.max(0, t.recoil - dt * 3);
 
     t.syncTransform();
+    t.updateSuspension(dt);
     t.spinWheels(dt);
 
     // track dust + engine exhaust
@@ -621,8 +639,10 @@ export class BattleMode {
     let throttle = 0, steer = 0;
     if (k.KeyW || k.ArrowUp) throttle += 1;
     if (k.KeyS || k.ArrowDown) throttle -= 1;
-    if (k.KeyA || k.ArrowLeft) steer -= 1;
-    if (k.KeyD || k.ArrowRight) steer += 1;
+    // Yaw increases toward world +X, which sits on the LEFT of the screen when
+    // the camera looks down +Z — so left/right map to +/- steer, not the reverse.
+    if (k.KeyA || k.ArrowLeft) steer += 1;
+    if (k.KeyD || k.ArrowRight) steer -= 1;
     if (k.Space) { throttle = 0; p.speed *= Math.exp(-5 * dt); }
     // reversing inverts the steering feel, as on a real tracked vehicle
     if (throttle < 0) steer *= -1;
@@ -953,7 +973,65 @@ export class BattleMode {
     }
     // run on the game clock, not wall time, so a stalled tab can't skip it
     this.endTimer = won ? 0.6 : 1.9;
-    this.endPayload = { won, wave: this.wave, kills: this.kills, score: this.score, time: this.time };
+    Save.endRun(this.wave, this.score, this.kills);
+    const best = Save.loadProgress();
+    this.endPayload = { won, wave: this.wave, kills: this.kills, score: this.score,
+                        time: this.time, bestWave: best.bestWave, bestScore: best.bestScore };
+  }
+
+  /**
+   * Level-of-detail for AI. Everything near the player runs every frame;
+   * distant units accumulate time and run a bigger step less often, which
+   * keeps a nine-tank wave off the frame budget without changing behaviour.
+   */
+  _updateUnit(u, dt) {
+    const d2 = u.pos.distanceToSquared(this.player.pos);
+    u.tank.setShadowCasting(d2 < 95 * 95);
+    if (d2 < 110 * 110 || !u.alive) { u.update(dt); return; }
+    const stride = d2 < 200 * 200 ? 2 : 4;
+    u._acc = (u._acc || 0) + dt;
+    if (u._lodStep === undefined) u._lodStep = (this.enemies.indexOf(u) + 1) % stride;
+    if (++u._lodTick % stride === u._lodStep % stride || u._acc > 0.2) {
+      u.update(u._acc);
+      u._acc = 0;
+    }
+  }
+
+  /**
+   * Rewarded-ad revive: rebuild the destroyed modules to a fighting state and
+   * resume the same run rather than restarting the wave ladder.
+   */
+  revive() {
+    const p = this.player;
+    p.destroyed = false;
+    for (const m of p.modules) {
+      if (!m.dead) { m.hp = m.maxHp; continue; }
+      m.dead = false;
+      m.hp = m.maxHp * 0.6;
+      m.mesh.visible = true;
+      m.mesh.rotation.set(0, m.kind === 'turret' ? (m.turret ? m.turret.yaw : 0) : 0, 0);
+      if (m.baseColor && m.mesh.material.color) m.mesh.material.color.copy(m.baseColor);
+      if (m.turret) m.turret.dead = false;
+    }
+    p.hp = p.modules.reduce((s, m) => s + m.hp, 0);
+    this.gameOver = false;
+    this.endTimer = 0;
+    this.waveClearing = false;
+    this.el.vignette.style.opacity = 0;
+    // clear the immediate area so you don't die again on the spot
+    for (const e of this.enemies) {
+      if (e.alive && e.pos.distanceTo(p.pos) < 45) {
+        const a = Math.atan2(e.pos.z - p.pos.z, e.pos.x - p.pos.x);
+        e.tank.pos.set(p.pos.x + Math.cos(a) * 90, 0, p.pos.z + Math.sin(a) * 90);
+        e.alertness = 0;
+      }
+    }
+    this.renderWeapons();
+    this.active = true;
+    this.el.root.classList.remove('hidden');
+    this.app.setScene(this.scene, this.camera);
+    this.app.audio.startEngine();
+    this.banner('BACK IN THE FIGHT', 'field repair complete');
   }
 
   // ─────────────── frame ───────────────
@@ -962,12 +1040,14 @@ export class BattleMode {
     this.time += dt;
 
     this.updatePlayer(dt);
-    for (const e of this.enemies) e.update(dt);
-    for (const a of this.allies) a.update(dt);
+    for (const e of this.enemies) this._updateUnit(e, dt);
+    for (const a of this.allies) this._updateUnit(a, dt);
     this.updateProjectiles(dt);
     this.updateCamera(dt);
     this.fx.update(dt);
-    this.updateHUD(dt);
+
+    this.hudTimer = (this.hudTimer || 0) - dt;
+    if (this.hudTimer <= 0) { this.hudTimer = 1 / 15; this.updateHUD(dt); }
 
     // ── end of run ──
     if (this.gameOver) {
@@ -984,6 +1064,7 @@ export class BattleMode {
       this.waveClearing = true;
       this.waveTimer = 3.2;
       this.score += 250 * this.wave;
+      Save.saveWave(this.wave, this.score, this.kills);
       const repaired = this.player.repair(0.35);
       this.banner('SECTOR CLEAR',
         repaired > 0 ? `+${250 * this.wave} bonus · field repair` : `+${250 * this.wave} bonus`);
@@ -993,6 +1074,12 @@ export class BattleMode {
     if (this.waveClearing) {
       this.waveTimer -= dt;
       if (this.waveTimer <= 0) {
+        // a cleared sector is the natural break point; never mid-firefight
+        if (this.wave > 0 && this.wave % 3 === 0 && !this._adPending) {
+          this._adPending = true;
+          Ads.commercialBreak(`Wave ${this.wave} cleared`).finally(() => { this._adPending = false; });
+        }
+        Ads.happytime();
         for (const e of this.enemies) e.removeFrom(this.scene);
         this.enemies.length = 0;
         // wrecked wingmen are replaced by fresh crews between waves

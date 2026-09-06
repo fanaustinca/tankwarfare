@@ -55,15 +55,21 @@
     <div id="upgrade-list"></div>
   </aside>
 
+  <div class="ad-banner" id="bay-banner"></div>
   <div class="hint" id="build-hint"></div>
 
   <footer class="buildbar">
+    <span class="saved-dot" id="saved-dot">saved</span>
     <button class="btn ghost" id="btn-quick">&#9889; Quick Build</button>
     <button class="btn ghost" id="btn-undo">&#8630; Undo</button>
     <button class="btn ghost danger" id="btn-clear">Clear</button>
     <div class="layerctl" id="layerctl">
       <label>Layer</label>
       <div class="layers"><button data-layer="0">1</button><button data-layer="1">2</button><button data-layer="2">3</button></div>
+    </div>
+    <div class="layerctl hidden" id="rotctl">
+      <label>Mount</label>
+      <button class="rotbtn" id="btn-rotate"><span id="rot-size">1&times;1</span><small>R</small></button>
     </div>
     <div class="spacer"></div>
     <button class="btn" id="btn-prev">&#9666; Back</button>
@@ -125,7 +131,14 @@
       <div><h4>Battle</h4><p>Third-person combat against AI armour that patrols, flanks and takes cover behind hard terrain.</p></div>
       <div><h4>Damage</h4><p>Modules take localised hits. Watch them spark, smoke and burn off your chassis.</p></div>
     </div>
+    <div class="ov-save hidden" id="ov-save"></div>
     <button class="btn primary big" id="btn-start">Enter Assembly Bay</button>
+    <div class="ov-opts">
+      <label><input type="checkbox" id="opt-invx"> Invert look X</label>
+      <label><input type="checkbox" id="opt-invy"> Invert look Y</label>
+      <label>Sensitivity <input type="range" id="opt-sens" min="0.3" max="2.5" step="0.1" value="1"></label>
+      <button class="linkbtn" id="btn-wipe">Reset saved data</button>
+    </div>
     <div class="ov-foot">Three.js &middot; WebGL2 &middot; procedural PBR materials</div>
   </div>
 
@@ -136,6 +149,8 @@
     <div class="ov-stats" id="end-stats"></div>
     <div class="ov-btns">
       <button class="btn primary" id="btn-again">Redeploy Same Tank</button>
+      <button class="btn" id="btn-resume">Resume at Wave <b id="resume-wave">1</b></button>
+      <button class="btn" id="btn-revive">&#9654; Watch Ad &mdash; Repair &amp; Continue</button>
       <button class="btn" id="btn-rebuild">Back to Assembly Bay</button>
     </div>
   </div>

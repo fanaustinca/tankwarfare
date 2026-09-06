@@ -53,7 +53,9 @@ Three upgrade tracks, bought once and applied to every part of that class — Fi
 
 ## Battle Mode
 
-Third-person combat across a 230 m battlefield of rock, blast walls and bunkers.
+Third-person combat across a **560 m** battlefield of rolling terrain and boulder fields.
+
+![Terrain](docs/terrain.png)
 
 - **Physics** — momentum, mass-limited acceleration, terrain following and body roll all derive
   from what you actually built. A heavy tank wallows; a light one skitters.
@@ -65,6 +67,13 @@ Third-person combat across a 230 m battlefield of rock, blast walls and bunkers.
   hard cover when hurt, and lead their shots. Crew skill scales with wave tier.
 - **Squad** — you fight alongside AI wingmen running the same AI on your side. Wrecked
   wingmen are replaced between waves.
+- **Terrain that matters** — line of sight is tested against the height field, not just
+  against cover, so crews genuinely lose sight of each other behind a ridge and manoeuvre
+  to reopen the shot.
+- **Independent suspension** — the tracks are flood-filled into connected runs, and each run
+  is its own bogie riding a damped spring against the ground beneath it. Two side treads
+  articulate separately; four corner pads give you four. A wrecked run sags off its
+  torsion bars.
 - **Gunner assignment** — hand any turret to an AI gunner that acquires and engages its own
   targets, or keep it on your crosshair. Mix and match mid-fight.
 
@@ -81,6 +90,45 @@ Third-person combat across a 230 m battlefield of rock, blast walls and bunkers.
 | `T` | Toggle every turret at once |
 | `B` / `Esc` | Back to the assembly bay |
 | `M` | Mute |
+
+Invert-look and sensitivity live on the title screen and persist between sessions.
+
+## Saving
+
+Everything persists in `localStorage`, guarded so a browser that blocks storage still runs:
+
+- **Your chassis** is auto-saved as you build and restored the next time you open the game.
+- **Wave progress** is banked on every sector cleared, with best wave and best score kept
+  across runs. After a defeat past wave 2 you can redeploy a couple of waves back instead of
+  restarting the ladder.
+- **Settings** — invert look X/Y and mouse sensitivity.
+
+Reset everything from the title screen.
+
+## Portal / ad integration
+
+The game never calls a portal SDK directly — `js/ads.js` detects whichever is present and
+falls back to a visible placeholder, so the same build runs on GitHub Pages, Poki and
+CrazyGames unchanged. Ad breaks pause the simulation and mute audio.
+
+| Hook | Where it fires |
+|---|---|
+| loading finished | once assets are baked |
+| gameplay start / stop | entering battle, returning to the bay, end of run |
+| interstitial | after every third sector cleared — never mid-firefight |
+| rewarded | "Repair & Continue" on the defeat screen, once per run |
+| banner | 300×250 slot in the assembly bay |
+
+To go live on a portal, add its loader to `index.html` — detection does the rest:
+
+```html
+<!-- Poki -->       <script src="//game-cdn.poki.com/scripts/v2/poki-sdk.js"></script>
+<!-- CrazyGames --> <script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
+```
+
+> The SDK call surface here is written defensively (feature-detected, wrapped in `try`/`catch`,
+> with timeouts) but has only been exercised against the placeholder path. Verify it against
+> each portal's current docs before submitting.
 
 ## Dev console
 
@@ -124,7 +172,9 @@ js/
   build.js      build mode: grid, phases, placement, economy
   battle.js     battle mode: physics, projectiles, waves, HUD
   ai.js         tank crew AI — used by both teams
-  world.js      renderer, sky, terrain, cover, post-processing
+  world.js      renderer, sky, terrain, cover, spatial grid, post-processing
+  save.js       localStorage persistence for the tank, progress and settings
+  ads.js        portal ad abstraction (Poki / CrazyGames / placeholder)
   textures.js   procedural PBR: albedo/roughness/metalness + Sobel normals
   assets.js     one-time texture bake → shared materials
   fx.js         pooled particles, explosions, decals

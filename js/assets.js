@@ -40,13 +40,15 @@ export async function bakeAssets(onProgress = () => {}) {
   Assets.tex.armour = {};
   for (const b of BLOCKS) {
     Assets.tex.armour[b.id] = await step(`armour · ${b.name}`,
-      () => armourSet({ color: b.color, wear: b.wear, panel: b.id === 'blk_eng' ? 42 : 64 }));
+      () => armourSet({ size: 384, color: b.color, wear: b.wear,
+                        panel: b.id === 'blk_eng' ? 64 : 96 }));
   }
   Assets.tex.tread = await step('track treads', () => treadSet());
-  Assets.tex.ground = await step('battlefield terrain', () => groundSet());
-  Assets.tex.rock = await step('rock + concrete', () => rockSet());
+  Assets.tex.ground = await step('battlefield terrain', () => groundSet(768));
+  Assets.tex.rock = await step('rock + concrete', () => rockSet(384));
   // turrets reuse a darker gunmetal plate
-  Assets.tex.gunmetal = await step('gunmetal', () => armourSet({ color: [0.20, 0.22, 0.23], wear: 0.7, panel: 40 }));
+  Assets.tex.gunmetal = await step('gunmetal',
+    () => armourSet({ size: 384, color: [0.20, 0.22, 0.23], wear: 0.7, panel: 56 }));
 
   await step('materials', () => {
     Assets.mat.block = {};
@@ -61,7 +63,30 @@ export async function bakeAssets(onProgress = () => {}) {
     Assets.mat.wheel = new THREE.MeshStandardMaterial({
       color: 0x2b2d2c, metalness: 0.85, roughness: 0.55,
     });
-    Assets.mat.ground = pbr(Assets.tex.ground, { metalness: 0.0, roughness: 1.0, normal: 1.1, env: 0.55 });
+    // The ground tiles 90x across the map; without large-scale modulation that
+    // repeat is obvious from any distance. Blend a map-scale noise over it.
+    const groundMaps = { ...Assets.tex.ground };
+    const macro = groundMaps.macro;
+    delete groundMaps.macro;
+    Assets.mat.ground = pbr(groundMaps, { metalness: 0.0, roughness: 1.0, normal: 1.1, env: 0.55 });
+    Assets.mat.ground.onBeforeCompile = (shader) => {
+      shader.uniforms.uMacro = { value: macro };
+      shader.uniforms.uMacroScale = { value: 0.0125 };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
+        .replace('#include <worldpos_vertex>',
+                 '#include <worldpos_vertex>\n\tvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>',
+                 '#include <common>\nuniform sampler2D uMacro;\nuniform float uMacroScale;\nvarying vec3 vWPos;')
+        .replace('#include <map_fragment>',
+                 '#include <map_fragment>\n'
+               + '\tfloat mA = texture2D( uMacro, vWPos.xz * uMacroScale ).r;\n'
+               + '\tfloat mB = texture2D( uMacro, vWPos.xz * uMacroScale * 0.31 + 0.37 ).r;\n'
+               + '\tfloat mac = mix( mA, mB, 0.5 );\n'
+               + '\tdiffuseColor.rgb *= 0.74 + mac * 0.58;\n'
+               + '\tdiffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3(1.07, 0.99, 0.87), mac * 0.5 );');
+    };
     Assets.mat.rock = pbr(Assets.tex.rock, { color: 0xa89e8d, metalness: 0.05, roughness: 1.0, normal: 1.2, env: 0.55 });
     Assets.mat.concrete = pbr(Assets.tex.rock, { color: 0x7d786c, metalness: 0.02, roughness: 0.95, normal: 0.8 });
     Assets.mat.glowHot = new THREE.MeshBasicMaterial({ color: 0xffb04a });
