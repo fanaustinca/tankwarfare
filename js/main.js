@@ -26,6 +26,16 @@ class App {
     const loader = document.getElementById('loader');
     const txt = loader.querySelector('.ldr-txt');
 
+    // Portal SDK first: init() must resolve before the SDK is touched, and it
+    // swaps in the portal's synced save backend — which has to happen before
+    // anything reads settings or restores a chassis.
+    txt.textContent = 'CONNECTING';
+    await Ads.init({
+      onPause: () => { this.paused = true; this.audio.setMuted(true); },
+      onResume: () => { this.paused = false; this.audio.setMuted(this.settings.muted); },
+    });
+    this.settings = Save.loadSettings();     // re-read through the portal backend
+
     await bakeAssets((label) => { txt.textContent = label.toUpperCase(); });
 
     txt.textContent = 'ASSEMBLING WORLD';
@@ -53,6 +63,7 @@ class App {
     document.getElementById('btn-start').addEventListener('click', () => {
       this.audio.init(); this.audio.resume();
       document.getElementById('overlay').classList.add('hidden');
+      this.uiReady = true;
       this.enterBuild();
     });
     document.getElementById('btn-again').addEventListener('click', () => {
@@ -81,12 +92,9 @@ class App {
       this.startBattle(this.lastBuild);
     });
 
-    // Ads pause the simulation rather than letting it run behind the overlay
-    await Ads.init({
-      onPause: () => { this.paused = true; this.audio.setMuted(true); },
-      onResume: () => { this.paused = false; this.audio.setMuted(this.settings.muted); },
-    });
-    Ads.mountBanner(document.getElementById('bay-banner'), '300x250');
+    // sized now; the request goes out once the bay is actually on screen
+    Ads.mountBanner(document.getElementById('bay-banner'), '320x100');
+    this.bayBanner = document.getElementById('bay-banner');
 
     installDevConsole(this);
 
@@ -158,6 +166,14 @@ class App {
     if (this.battle) this.battle.stop();
     this.mode = 'build';
     this.build.enter();
+    // request only after the bay is on screen for real — a scene transition is
+    // the documented moment to refresh, and the container must be visible.
+    // (boot() calls enterBuild once to warm the pipeline, behind the title
+    // overlay; requesting then gets rejected as notVisible.)
+    if (this.bayBanner && this.uiReady) {
+      if (this._bannerUp) Ads.refreshBanner(this.bayBanner, '320x100');
+      else { this._bannerUp = true; Ads.mountBanner(this.bayBanner, '320x100'); }
+    }
     this.composer.bloom.strength = 0.40;
     this.renderer.toneMappingExposure = 1.35;   // dark hangar interior
   }

@@ -334,8 +334,10 @@ button{font-family:inherit;color:inherit;border:0;background:none;cursor:pointer
   font-family:var(--mono);color:var(--dim2)}
 .ad-banner-inner span{font-size:12px;letter-spacing:.2em;text-transform:uppercase}
 .ad-banner-inner small{font-size:9px;opacity:.6}
-#bay-banner{position:absolute;right:20px;bottom:74px}
-@media (max-height:820px){#bay-banner{display:none}}
+/* 320x100 ("Large Mobile") is an accepted portal size and is the largest that
+   clears the upgrades panel above it at a 720p window height. */
+#bay-banner{position:absolute;right:20px;bottom:88px}
+@media (max-height:640px){#bay-banner{display:none}}
 
 #loader{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:var(--bg);
   gap:20px;grid-auto-flow:row;align-content:center;transition:opacity .5s}

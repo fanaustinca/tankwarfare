@@ -8,19 +8,31 @@ import { emptyBuild, emptyUpgrades, key2, key3, ALL_PARTS } from './parts.js';
 
 const KEY = { tank: 'tw.tank.v1', progress: 'tw.progress.v1', settings: 'tw.settings.v1' };
 
+// Storage backend. Defaults to localStorage; a portal can swap in its own
+// store with the same API (CrazyGames' data module syncs a logged-in player's
+// saves across their devices) via setStorageBackend().
+let backend = null;
+const store = () => backend || localStorage;
+
+export function setStorageBackend(b) {
+  if (!b || typeof b.getItem !== 'function') return false;
+  backend = b;
+  return true;
+}
+
 function read(key) {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = store().getItem(key);
     return raw ? JSON.parse(raw) : null;
   } catch (_) { return null; }
 }
 
 function write(key, value) {
-  try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+  try { store().setItem(key, JSON.stringify(value)); return true; }
   catch (_) { return false; }
 }
 
-function drop(key) { try { localStorage.removeItem(key); } catch (_) {} }
+function drop(key) { try { store().removeItem(key); } catch (_) {} }
 
 // ─────────────── build serialisation ───────────────
 export function serializeBuild(b) {
@@ -52,8 +64,10 @@ export function deserializeBuild(data) {
 
 // ─────────────── public API ───────────────
 export const Save = {
+  setStorageBackend,
+
   available() {
-    try { localStorage.setItem('tw.probe', '1'); localStorage.removeItem('tw.probe'); return true; }
+    try { store().setItem('tw.probe', '1'); store().removeItem('tw.probe'); return true; }
     catch (_) { return false; }
   },
 

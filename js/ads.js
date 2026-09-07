@@ -16,12 +16,16 @@
 //  an ad blocker, or throwing must never stop the game.
 // ───────────────────────────────────────────────────────────────
 
+import { Save } from './save.js';
+
 const PLACEHOLDER_SECONDS = 5;
 
 export const Ads = {
   provider: 'none',        // 'poki' | 'crazygames' | 'none'
+  environment: 'none',     // CrazyGames: 'local' | 'crazygames' | 'disabled'
   ready: false,
   inBreak: false,
+  adblock: false,
   _hooks: { onPause: null, onResume: null },
 
   /** @param hooks { onPause, onResume } — used to freeze the game during a break. */
@@ -39,15 +43,32 @@ export const Ads = {
         }
         this.ready = true;
       } else if (window.CrazyGames && window.CrazyGames.SDK) {
-        this.provider = 'crazygames';
         const sdk = window.CrazyGames.SDK;
-        if (typeof sdk.init === 'function') await sdk.init().catch(() => {});
-        this.ready = true;
+        // v3 must be awaited before anything else is touched
+        await sdk.init();
+        this.environment = sdk.environment || 'disabled';
+        // On any host that isn't crazygames.com or localhost the SDK reports
+        // 'disabled' and every call throws — treat that as no provider so the
+        // build still runs correctly on GitHub Pages, itch, etc.
+        if (this.environment === 'disabled') {
+          this.provider = 'none';
+        } else {
+          this.provider = 'crazygames';
+          this.ready = true;
+          // user data syncs across a logged-in player's devices; same API as
+          // localStorage, so the save layer can use it as a drop-in backend
+          if (sdk.data) Save.setStorageBackend(sdk.data);
+          try { this.adblock = await sdk.ad.hasAdblock(); } catch (_) {}
+          try { sdk.game.loadingStart(); } catch (_) {}
+        }
       }
     } catch (_) {
       this.provider = 'none';
     }
-    console.info(`[ads] provider: ${this.provider}${this.ready ? '' : ' (placeholder mode)'}`);
+    console.info(`[ads] provider: ${this.provider}`
+      + (this.environment !== 'none' ? ` · environment: ${this.environment}` : '')
+      + (this.adblock ? ' · adblock detected' : '')
+      + (this.ready ? '' : ' · placeholder mode'));
     return this.provider;
   },
 
@@ -55,7 +76,7 @@ export const Ads = {
   loadingFinished() {
     try {
       if (this.provider === 'poki') window.PokiSDK.gameLoadingFinished();
-      if (this.provider === 'crazygames') window.CrazyGames.SDK.game.loadingStop?.();
+      if (this.provider === 'crazygames') window.CrazyGames.SDK.game.loadingStop();
     } catch (_) {}
   },
 
@@ -128,19 +149,28 @@ export const Ads = {
     return earned;
   },
 
-  /** CrazyGames uses callbacks rather than promises. */
+  /**
+   * CrazyGames uses callbacks rather than promises.
+   * The portal requires the game to be paused and muted for the duration of
+   * the ad, and resumed on either finish or error.
+   */
   _crazyAd(type) {
     return new Promise((resolve) => {
       let settled = false;
-      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      const done = (v, err) => {
+        if (settled) return;
+        settled = true;
+        if (err) console.info('[ads] ad not shown:', err.code || err);
+        resolve(v);
+      };
       try {
         window.CrazyGames.SDK.ad.requestAd(type, {
+          adStarted: () => this._pause(),          // belt and braces; already paused
           adFinished: () => done(true),
-          adError: () => done(false),
-          adStarted: () => {},
+          adError: (err) => done(false, err),
         });
-      } catch (_) { done(false); }
-      setTimeout(() => done(false), 45000);      // never hang the game
+      } catch (e) { done(false, e); }
+      setTimeout(() => done(false, { code: 'timeout' }), 45000);   // never hang the game
     });
   },
 
@@ -201,18 +231,45 @@ export const Ads = {
    * Static banner slots. Portals that support display banners replace the
    * element's contents; otherwise the placeholder box stays visible.
    */
-  mountBanner(el, size = '300x250') {
+  async mountBanner(el, size = '300x250') {
     if (!el) return;
-    const [w, h] = size.split('x');
+    // 300x250 ("Medium") is one of the sizes the portal accepts; the container
+    // must already be exactly that size before the banner is requested.
+    const [w, h] = size.split('x').map(Number);
     el.style.width = w + 'px';
     el.style.height = h + 'px';
-    el.innerHTML = `<div class="ad-banner-inner"><span>Ad</span><small>${size}</small></div>`;
+    el.innerHTML = `<div class="ad-banner-inner"><span>Ad</span><small>${w}&times;${h}</small></div>`;
+    if (this.provider !== 'crazygames') return;
+    // The portal rejects a request against a container that isn't on screen
+    // ("notVisible"), so only ask once the bay is actually showing.
+    if (!this._visible(el)) return;
     try {
-      if (this.provider === 'crazygames' && window.CrazyGames.SDK.banner) {
-        window.CrazyGames.SDK.banner.requestBanner({
-          id: el.id, width: +w, height: +h,
-        });
-      }
+      await window.CrazyGames.SDK.banner.requestBanner({ id: el.id, width: w, height: h });
+      this._bannerAt = Date.now();
+    } catch (e) {
+      console.info('[ads] banner not filled:', (e && e.code) || e);
+    }
+  },
+
+  _visible(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.offsetParent === null) return false;              // display:none anywhere up the tree
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  },
+
+  /** Portals rate-limit banner refreshes; 30 s is the documented minimum. */
+  async refreshBanner(el, size = '300x250') {
+    if (this.provider !== 'crazygames') return;
+    if (!this._visible(el)) return;
+    if (this._bannerAt && Date.now() - this._bannerAt < 31000) return;
+    try { window.CrazyGames.SDK.banner.clearBanner(el.id); } catch (_) {}
+    return this.mountBanner(el, size);
+  },
+
+  clearBanners() {
+    try {
+      if (this.provider === 'crazygames') window.CrazyGames.SDK.banner.clearAllBanners();
     } catch (_) {}
   },
 };

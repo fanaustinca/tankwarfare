@@ -129,6 +129,48 @@ The game never calls a portal SDK directly — `js/ads.js` detects whichever is 
 falls back to a visible placeholder, so the same build runs on GitHub Pages, Poki and
 CrazyGames unchanged. Ad breaks pause the simulation and mute audio.
 
+**This branch ships the CrazyGames HTML5 SDK v3**, loaded from `index.html`:
+
+```html
+<script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
+```
+
+The SDK reports one of three environments and the adapter handles each:
+
+| `SDK.environment` | Where | Behaviour |
+|---|---|---|
+| `crazygames` | crazygames.com | Real ads, banners and synced saves |
+| `local` | localhost / 127.0.0.1 | Demo ads and banners — what the test harness uses |
+| `disabled` | anywhere else | **Every SDK call throws.** The adapter drops to `provider: 'none'` and the placeholder path, so GitHub Pages is unaffected |
+
+What the integration wires up:
+
+- `game.loadingStart()` / `loadingStop()` around the asset bake
+- `game.gameplayStart()` / `gameplayStop()` on entering battle, returning to the bay, and end of run
+- `game.happytime()` on a cleared sector
+- `ad.requestAd('midgame')` after every third sector, and `ad.requestAd('rewarded')` for the
+  Repair &amp; Continue revive — the game is paused and muted for the duration of both, as the
+  portal requires, and resumed on `adFinished` *or* `adError`
+- `ad.hasAdblock()` at startup
+- `banner.requestBanner()` for a 320×100 slot in the assembly bay, refreshed on scene
+  transition with the documented 30 s cooldown respected
+- `data` as the save backend — it has the same API as `localStorage` but syncs a logged-in
+  player's chassis and progress across their devices
+
+Verified end to end against the live SDK on localhost: real 5 s demo ads for both types,
+saves round-tripping through `SDK.data`, banner filling with no `notVisible` rejections, and
+the game resuming cleanly afterwards. Also verified from a non-portal hostname that
+`disabled` degrades to placeholders with the game fully playable.
+
+Still required before submission: a CrazyGames developer account and game entry, and a pass
+over their [content and technical requirements](https://docs.crazygames.com/requirements/).
+
+Sources: [SDK intro](https://docs.crazygames.com/sdk/intro/) ·
+[game](https://docs.crazygames.com/sdk/game/) ·
+[video ads](https://docs.crazygames.com/sdk/video-ads/) ·
+[banners](https://docs.crazygames.com/sdk/banners/) ·
+[data](https://docs.crazygames.com/sdk/data/)
+
 | Hook | Where it fires |
 |---|---|
 | loading finished | once assets are baked |
@@ -137,16 +179,15 @@ CrazyGames unchanged. Ad breaks pause the simulation and mute audio.
 | rewarded | "Repair & Continue" on the defeat screen, once per run |
 | banner | 300×250 slot in the assembly bay |
 
-To go live on a portal, add its loader to `index.html` — detection does the rest:
+For Poki, add its loader to `index.html` and detection does the rest:
 
 ```html
-<!-- Poki -->       <script src="//game-cdn.poki.com/scripts/v2/poki-sdk.js"></script>
-<!-- CrazyGames --> <script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
+<script src="//game-cdn.poki.com/scripts/v2/poki-sdk.js"></script>
 ```
 
-> The SDK call surface here is written defensively (feature-detected, wrapped in `try`/`catch`,
-> with timeouts) but has only been exercised against the placeholder path. Verify it against
-> each portal's current docs before submitting.
+> The Poki path is written defensively (feature-detected, wrapped in `try`/`catch`, with
+> timeouts) but has not been exercised against a live Poki SDK. Verify it against their
+> current docs before submitting there.
 
 ## Dev console
 
