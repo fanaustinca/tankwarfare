@@ -57,6 +57,7 @@ class App {
     });
     document.getElementById('btn-again').addEventListener('click', () => {
       document.getElementById('overlay').classList.add('hidden');
+      this.battle.clearRun();
       this.startBattle(this.lastBuild);
     });
     document.getElementById('btn-rebuild').addEventListener('click', () => {
@@ -167,6 +168,8 @@ class App {
     this.build.exit();
     this.mode = 'battle';
     this.audio.init(); this.audio.resume();
+    const wanted = this.settings.map || 'dunes';
+    this.battle.setMap(wanted);
     this.battle.start(build);
     Ads.gameplayStart();
     this.composer.bloom.strength = 0.55;
@@ -175,7 +178,9 @@ class App {
 
   returnToBuild() {
     Ads.gameplayStop();
+    this.battle.suspend();          // keep the wave you were on
     this.enterBuild();
+    this.build.updateHUD();
   }
 
   showEnd({ won, wave, kills, score, time, bestWave, bestScore }) {

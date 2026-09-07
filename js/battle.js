@@ -4,7 +4,7 @@
 //  wave spawning and the combat HUD.
 // ───────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { Battlefield, heightAt } from './world.js';
+import { Battlefield, heightAt, MAPS, getMap } from './world.js';
 import { Tank } from './tank.js';
 import { AITank } from './ai.js';
 import { FX } from './fx.js';
@@ -161,6 +161,18 @@ export class BattleMode {
   }
 
   // ─────────────── lifecycle ───────────────
+  /** Rebuild the battlefield for another map. Safe to call between runs. */
+  setMap(id) {
+    if (getMap().id === id) return getMap();
+    const m = this.field.applyMap(id);
+    // anything already on the field is standing on the old terrain
+    for (const e of this.enemies) e.removeFrom(this.scene);
+    for (const a of this.allies) a.removeFrom(this.scene);
+    this.enemies.length = 0;
+    this.allies.length = 0;
+    return m;
+  }
+
   start(build) {
     // clean up any previous run
     for (const e of this.enemies) e.removeFrom(this.scene);
@@ -186,11 +198,14 @@ export class BattleMode {
       get alive() { return !self.player.destroyed; },
     };
 
-    // a resume point set from the bay starts the run partway through the ladder
-    this.wave = Math.max(0, (this.resumeWave || 1) - 1);
+    // Carry the run across a trip to the assembly bay: pulling back to refit
+    // should drop you into the same wave, not restart the ladder.
+    const carry = this.pendingRun;
+    this.pendingRun = null;
+    this.wave = Math.max(0, (carry ? carry.wave : (this.resumeWave || 1)) - 1);
     this.resumeWave = 0;
-    this.score = 0;
-    this.kills = 0;
+    this.score = carry ? carry.score : 0;
+    this.kills = carry ? carry.kills : 0;
     this.time = 0;
     this.gameOver = false;
     this.godMode = this.godMode || false;
@@ -222,6 +237,16 @@ export class BattleMode {
     const dom = this.app.renderer.domElement;
     setTimeout(() => { if (this.active) dom.requestPointerLock(); }, 80);
   }
+
+  /** Stash the run so redeploying continues it rather than starting over. */
+  suspend() {
+    if (!this.active || this.gameOver || !this.player) return null;
+    this.pendingRun = { wave: this.wave, score: this.score, kills: this.kills };
+    return this.pendingRun;
+  }
+
+  /** Discard any suspended run — used when deliberately starting fresh. */
+  clearRun() { this.pendingRun = null; }
 
   stop() {
     this.active = false;
@@ -572,7 +597,10 @@ export class BattleMode {
     const distToCam = this.player ? this.player.pos.distanceTo(point) : 0;
 
     if (directTank) {
-      const res = directTank.applyDamage(point, dmg);
+      // A big HE round should cave in a SECTION of hull, not the whole tank —
+      // capped well under a chassis width so it never one-shots outright.
+      const local = def.splash > 2 ? Math.min(def.splash * 0.20, 2.4) : 0;
+      const res = directTank.applyDamage(point, dmg, local);
       _n.subVectors(point, directTank.pos).normalize();
       this.fx.impactSparks(point, _n, dmg, true);
       this.app.audio.hit(true, fromPlayer ? distToCam : 0);

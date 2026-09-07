@@ -72,20 +72,28 @@ export async function bakeAssets(onProgress = () => {}) {
     Assets.mat.ground.onBeforeCompile = (shader) => {
       shader.uniforms.uMacro = { value: macro };
       shader.uniforms.uMacroScale = { value: 0.0125 };
+      // A colour multiply can only darken or tint — it cannot pull the baked
+      // sand hue toward pale salt or green scrub. Desaturate first, then tint.
+      shader.uniforms.uDesat = { value: 0 };
+      shader.uniforms.uTint = { value: new THREE.Color(1, 1, 1) };
+      Assets.mat.ground.userData.shader = shader;
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
         .replace('#include <worldpos_vertex>',
                  '#include <worldpos_vertex>\n\tvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>',
-                 '#include <common>\nuniform sampler2D uMacro;\nuniform float uMacroScale;\nvarying vec3 vWPos;')
+                 '#include <common>\nuniform sampler2D uMacro;\nuniform float uMacroScale;\n'
+               + 'uniform float uDesat;\nuniform vec3 uTint;\nvarying vec3 vWPos;')
         .replace('#include <map_fragment>',
                  '#include <map_fragment>\n'
                + '\tfloat mA = texture2D( uMacro, vWPos.xz * uMacroScale ).r;\n'
                + '\tfloat mB = texture2D( uMacro, vWPos.xz * uMacroScale * 0.31 + 0.37 ).r;\n'
                + '\tfloat mac = mix( mA, mB, 0.5 );\n'
                + '\tdiffuseColor.rgb *= 0.74 + mac * 0.58;\n'
-               + '\tdiffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3(1.07, 0.99, 0.87), mac * 0.5 );');
+               + '\tdiffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3(1.07, 0.99, 0.87), mac * 0.5 );\n'
+               + '\tfloat lum = dot( diffuseColor.rgb, vec3(0.299, 0.587, 0.114) );\n'
+               + '\tdiffuseColor.rgb = mix( diffuseColor.rgb, vec3(lum), uDesat ) * uTint;');
     };
     Assets.mat.rock = pbr(Assets.tex.rock, { color: 0xa89e8d, metalness: 0.05, roughness: 1.0, normal: 1.2, env: 0.55 });
     Assets.mat.concrete = pbr(Assets.tex.rock, { color: 0x7d786c, metalness: 0.02, roughness: 0.95, normal: 0.8 });

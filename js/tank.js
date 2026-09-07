@@ -386,7 +386,15 @@ export class Tank {
     const dx = _v.x - _v2.x, dz = _v.z - _v2.z, dy = _v.y - (_v2.y + 0.45);
     const wantYaw = Math.atan2(dx, dz);
     const horiz = Math.hypot(dx, dz);
-    const wantPitch = clamp(-Math.atan2(dy, horiz), -0.32, 0.20);
+
+    // Ballistic compensation. Shells are affected by gravity in flight, so
+    // aiming straight at the target undershoots — badly for the slow, heavy
+    // guns, which is why they scored almost no direct hits at range.
+    // drop = ½·g·t² with t = d/v, so lift the aim by that much.
+    const v = t.def.muzzle || 100;
+    const g = 20 * (t.def.kind === 'missile' ? 0.15 : 0.55);
+    const drop = (g * horiz * horiz) / (2 * v * v);
+    const wantPitch = clamp(-Math.atan2(dy + drop, horiz), -0.32, 0.20);
 
     // heavy guns traverse more slowly — a 155mm can't whip around
     const mass = 1 / (1 + (t.def.weight || 200) / 620);
@@ -465,24 +473,28 @@ export class Tank {
    * Apply damage at a point. Sloped armour deflects a share of it.
    * @returns {{module:Module, killed:boolean, destroyedTank:boolean, deflected:boolean}}
    */
-  applyDamage(worldPoint, amount) {
+  /**
+   * @param splashRadius metres of local blast. A large HE shell should cave in
+   *   a section of hull, not chip one plate, so anything with real splash also
+   *   damages the surrounding modules on the same tank.
+   */
+  applyDamage(worldPoint, amount, splashRadius = 0) {
     if (this.destroyed || this.invulnerable) return null;
     const m = this.moduleAt(worldPoint);
     if (!m) return null;
     let deflected = false;
     let dmg = amount;
     if (m.def.sloped && Math.random() < 0.35) { dmg *= 0.35; deflected = true; }
-    m.hp -= dmg;
-    this.hp = Math.max(0, this.hp - dmg);
+    const killed = this._damageModule(m, dmg);
 
-    let killed = false;
-    if (m.hp <= 0) {
-      m.hp = 0; m.dead = true; killed = true;
-      this._killModule(m);
-    } else if (m.baseColor) {
-      // scorch the plate progressively as it takes hits
-      this._ownMaterial(m);
-      m.mesh.material.color.copy(m.baseColor).multiplyScalar(1 - m.damage01 * 0.55);
+    if (splashRadius > 0.5) {
+      for (const other of this.modules) {
+        if (other === m || other.dead) continue;
+        other.mesh.getWorldPosition(_v2);
+        const d = _v2.distanceTo(worldPoint);
+        if (d > splashRadius) continue;
+        this._damageModule(other, amount * (1 - d / splashRadius) * 0.46);
+      }
     }
 
     // a "structural kill": once enough of the hull is gone the tank is finished,
@@ -493,6 +505,25 @@ export class Tank {
       aliveStructural / Math.max(1, structural.length) < 0.6;
     if (destroyedTank) this.destroyed = true;
     return { module: m, killed, destroyedTank, deflected };
+  }
+
+  /** Apply damage to one module. @returns true if this finished it off. */
+  _damageModule(m, dmg) {
+    if (m.dead || dmg <= 0) return false;
+    const absorbed = Math.min(dmg, m.hp);   // overkill doesn't drain the hull pool
+    m.hp -= dmg;
+    this.hp = Math.max(0, this.hp - absorbed);
+    if (m.hp <= 0) {
+      m.hp = 0; m.dead = true;
+      this._killModule(m);
+      return true;
+    }
+    if (m.baseColor) {
+      // scorch the plate progressively as it takes hits
+      this._ownMaterial(m);
+      m.mesh.material.color.copy(m.baseColor).multiplyScalar(1 - m.damage01 * 0.55);
+    }
+    return false;
   }
 
   _killModule(m) {

@@ -43,7 +43,7 @@ Guns occupy a real footprint on the hull, so the big ones have to be designed ar
 | Twin 40mm Flak | 2×1 | Both barrels fire **at once** |
 | 120mm Cannon | 1×1 | The dependable main gun |
 | Double 105mm | 2×1 | Two shells downrange per trigger pull |
-| **155mm Siege Gun** | **3×3** | Devastating; needs a full flat 3×3 platform to mount |
+| **155mm Siege Gun** | **3×3** | 950 dmg a shell, and the blast caves in a whole section of hull |
 | Missile Pod | 1×1 | Guided warheads with a wide splash |
 
 The 155mm is the extreme case: it claims nine cells of hull roof, so the whole chassis has to be
@@ -58,7 +58,18 @@ Three upgrade tracks, bought once and applied to every part of that class — Fi
 
 ## Battle Mode
 
-Third-person combat across a **560 m** battlefield of rolling terrain and boulder fields.
+Third-person combat across a **560 m** battlefield. Four maps, picked in the assembly bay:
+
+| Map | Character |
+|---|---|
+| **Dune Sea** | Rolling sand, scattered boulder fields, long sightlines |
+| **Ashfall** | Volcanic rock under a low hazy sun; spires everywhere |
+| **Salt Flats** | Bright, near-level pan — almost no cover, pure gunnery |
+| **Highlands** | Steep green ridges and dense rock; fights are close and broken up |
+
+They differ in more than paint: terrain relief runs 7 m on the Salt Flats to 39 m in the
+Highlands, and the share of shots masked by ground at 100 m goes from 24% to 73%. Long-range
+guns rule the flats and are nearly useless in the highlands.
 
 ![Terrain](docs/terrain.png)
 
@@ -106,6 +117,8 @@ Everything persists in `localStorage`, guarded so a browser that blocks storage 
 - **Wave progress** is banked on every sector cleared, with best wave and best score kept
   across runs. After a defeat past wave 2 you can redeploy a couple of waves back instead of
   restarting the ladder.
+- **Pulling back to refit** keeps your place: press `B` mid-run, change the tank, and the
+  deploy button reads *Resume Wave N* — you return to the same wave with your score intact.
 - **Settings** — invert look X/Y and mouse sensitivity.
 
 Reset everything from the title screen.

@@ -15,6 +15,7 @@ import {
 } from './parts.js';
 import { clamp, smooth, fmt } from './util.js';
 import { Save } from './save.js';
+import { MAPS, getMap } from './world.js';
 
 const ORIGIN = { ox: (-GRID / 2 + 0.5) * CELL, oz: (-GRID / 2 + 0.5) * CELL };
 
@@ -149,6 +150,28 @@ export class BuildMode {
     $('btn-prev').addEventListener('click', () => this.setPhase(Math.max(0, this.phase - 1)));
     $('btn-rotate').addEventListener('click', () => this.rotatePending());
     $('btn-delete').addEventListener('click', () => this.toggleDelete());
+
+    // ── battlefield picker ──
+    const sel = $('map-select');
+    for (const m of MAPS) {
+      const o = document.createElement('option');
+      o.value = m.id; o.textContent = m.name;
+      sel.appendChild(o);
+    }
+    sel.value = (this.app.settings.map && MAPS.some((m) => m.id === this.app.settings.map))
+      ? this.app.settings.map : MAPS[0].id;
+    const showDesc = () => {
+      const m = MAPS.find((x) => x.id === sel.value) || MAPS[0];
+      $('map-desc').textContent = m.desc;
+    };
+    showDesc();
+    sel.addEventListener('change', () => {
+      this.app.settings.map = sel.value;
+      Save.saveSettings(this.app.settings);
+      showDesc();
+      this.app.audio.ui(1.1);
+    });
+    this.el.mapSelect = sel;
     $('btn-clear').addEventListener('click', () => {
       const keep = this.build.upgrades;
       this.build = emptyBuild(); this.build.upgrades = keep;   // keep purchased upgrades
@@ -636,6 +659,10 @@ export class BuildMode {
     e.battle.disabled = !s.valid || broke;
     e.battle.title = broke ? 'Over budget — sell something off'
       : s.valid ? '' : 'Needs at least 2 tracks, 1 hull block and 1 turret';
+    const run = this.app.battle && this.app.battle.pendingRun;
+    e.battle.innerHTML = run
+      ? `&#9876; Resume Wave ${run.wave}`
+      : '&#9876; Ready for Battle';
     this.renderPalette();
     this.renderUpgrades();
     document.querySelectorAll('.phase').forEach((b) => {

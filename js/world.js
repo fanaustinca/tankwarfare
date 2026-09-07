@@ -18,18 +18,79 @@ import { GRID, CELL } from './parts.js';
 export const ARENA = 560;           // full width of the battlefield in metres
 const TERRAIN_SEG = 260;            // ~2.15 m per quad
 
+/**
+ * Battlefield presets. Each one is a terrain shape plus a lighting and colour
+ * treatment — the textures are baked once and tinted, so switching maps costs
+ * a geometry rebuild rather than a re-bake.
+ *   terrain: [frequency, amplitude] per octave band, `base` recentres it,
+ *            `flat` is the radius ramp that keeps the deployment zone drivable
+ */
+export const MAPS = [
+  {
+    id: 'dunes', name: 'Dune Sea',
+    desc: 'Rolling sand, scattered boulder fields, long sightlines.',
+    terrain: { hills: [0.0062, 30], ridge: [0.0115, 13], roll: [0.030, 4.5],
+               detail: [0.088, 1.1], base: 24, flat: [22, 34] },
+    ground: 0xffffff, groundDesat: 0, rock: 0xa89e8d,
+    fog: [0xb4ac97, 0.0011],
+    sky: { turbidity: 3.4, rayleigh: 2.8, mie: 0.004, gain: 0.12, elev: 38, azim: 125 },
+    sun: [0xfff2dc, 4.0], hemi: [0xa8c4d8, 0x6b5334, 0.45], env: 0.85,
+    props: { fields: 26, lone: 34, anchor: [6, 15], spire: 0.22, slab: 0.30 },
+  },
+  {
+    id: 'ashfall', name: 'Ashfall',
+    desc: 'Volcanic rock under a low, hazy sun. Spires everywhere.',
+    terrain: { hills: [0.0078, 34], ridge: [0.0145, 17], roll: [0.034, 5.2],
+               detail: [0.095, 1.3], base: 28, flat: [22, 34] },
+    ground: 0x9d8f7e, groundDesat: 0.55, rock: 0x565049,
+    fog: [0x8a7c6e, 0.0017],
+    sky: { turbidity: 9.0, rayleigh: 1.1, mie: 0.008, gain: 0.17, elev: 16, azim: 205 },
+    sun: [0xffcd9a, 3.5], hemi: [0x8a7f78, 0x2a2320, 0.5], env: 0.7,
+    props: { fields: 30, lone: 42, anchor: [5, 13], spire: 0.48, slab: 0.18 },
+  },
+  {
+    id: 'saltflats', name: 'Salt Flats',
+    desc: 'Bright, near-level pan. Almost no cover — pure gunnery.',
+    terrain: { hills: [0.0050, 9], ridge: [0.0100, 3], roll: [0.026, 1.6],
+               detail: [0.080, 0.6], base: 7, flat: [18, 26] },
+    ground: 0xf2eee2, groundDesat: 0.82, rock: 0xc9c3b4,
+    fog: [0xdcd6c6, 0.0008],
+    sky: { turbidity: 2.0, rayleigh: 1.5, mie: 0.003, gain: 0.10, elev: 62, azim: 95 },
+    sun: [0xfffaf0, 4.7], hemi: [0xcfe0ea, 0x9a917e, 0.55], env: 1.0,
+    props: { fields: 11, lone: 15, anchor: [9, 19], spire: 0.12, slab: 0.42 },
+  },
+  {
+    id: 'highlands', name: 'Highlands',
+    desc: 'Steep green ridges and dense rock. Fights are close and broken up.',
+    terrain: { hills: [0.0082, 40], ridge: [0.0155, 18], roll: [0.033, 5.5],
+               detail: [0.090, 1.3], base: 32, flat: [24, 36] },
+    ground: 0x9fbd7e, groundDesat: 0.62, rock: 0x8d9490,
+    fog: [0x9fae9a, 0.0014],
+    sky: { turbidity: 4.6, rayleigh: 3.5, mie: 0.005, gain: 0.13, elev: 44, azim: 155 },
+    sun: [0xf7f3e4, 3.8], hemi: [0xa9c0cf, 0x54603f, 0.5], env: 0.9,
+    props: { fields: 34, lone: 46, anchor: [5, 12], spire: 0.30, slab: 0.26 },
+  },
+];
+
+export const MAP_BY_ID = Object.fromEntries(MAPS.map((m) => [m.id, m]));
+
+let activeMap = MAPS[0];
+export const getMap = () => activeMap;
+export function setMap(id) { activeMap = MAP_BY_ID[id] || MAPS[0]; return activeMap; }
+
 /** Shared terrain height field — physics and geometry read the same function. */
 export function heightAt(x, z) {
   // Frequencies are chosen against the value-noise lattice: too low and the
   // whole map samples inside a single cell, which reads as dead flat.
-  let h = fbm(x * 0.0062 + 40, z * 0.0062 + 17, 4) * 30;                     // hills, ~160 m across
-  h += (1 - Math.abs(fbm(x * 0.0115 + 9, z * 0.0115 + 3, 3) * 2 - 1)) * 13;  // ridge lines
-  h += fbm(x * 0.030 + 71, z * 0.030 + 23, 3) * 4.5;                         // rolling ground
-  h += fbm(x * 0.088 + 3, z * 0.088 + 9, 2) * 1.1;                           // surface detail
-  h -= 24;
+  const t = activeMap.terrain;
+  let h = fbm(x * t.hills[0] + 40, z * t.hills[0] + 17, 4) * t.hills[1];
+  h += (1 - Math.abs(fbm(x * t.ridge[0] + 9, z * t.ridge[0] + 3, 3) * 2 - 1)) * t.ridge[1];
+  h += fbm(x * t.roll[0] + 71, z * t.roll[0] + 23, 3) * t.roll[1];
+  h += fbm(x * t.detail[0] + 3, z * t.detail[0] + 9, 2) * t.detail[1];
+  h -= t.base;
   // flatten the deployment zone so you always start on drivable ground
   const d = Math.hypot(x, z);
-  const flat = clamp((d - 22) / 34, 0, 1);
+  const flat = clamp((d - t.flat[0]) / t.flat[1], 0, 1);
   return h * flat;
 }
 
@@ -71,7 +132,7 @@ export function createComposer(renderer, scene, camera) {
 
 // ─────────────── battlefield ───────────────
 export class Battlefield {
-  constructor(renderer) {
+  constructor(renderer, map = null) {
     this.scene = new THREE.Scene();
     this.obstacles = [];
     this.renderer = renderer;
@@ -79,21 +140,13 @@ export class Battlefield {
     this._rockGeos = [];
     this._queryStamp = 0;
 
-    const sunDir = new THREE.Vector3();
-    const elev = THREE.MathUtils.degToRad(90 - 38);   // mid-afternoon: long shadows, no glare
-    const azim = THREE.MathUtils.degToRad(125);
-    sunDir.setFromSphericalCoords(1, elev, azim);
-    this.sunDir = sunDir;
+    this.propMeshes = [];
+    this.sunDir = new THREE.Vector3();
 
     // ── physical sky ──
     const sky = new Sky();
     sky.scale.setScalar(45000);
-    const u = sky.material.uniforms;
-    u.turbidity.value = 3.4;
-    u.rayleigh.value = 2.8;
-    u.mieCoefficient.value = 0.004;
-    u.mieDirectionalG.value = 0.80;
-    u.sunPosition.value.copy(sunDir);
+    sky.material.uniforms.mieDirectionalG.value = 0.80;
 
     // The Sky shader emits radiance far above 1.0. UnrealBloomPass runs on the
     // raw HDR buffer *before* tone mapping, so an unscaled sky blooms across the
@@ -110,24 +163,11 @@ export class Battlefield {
     sky.material.needsUpdate = true;
     this.sky = sky;
 
-    // image-based lighting straight off the sky — free realistic reflections
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    pmrem.compileEquirectangularShader();
-    const skyScene = new THREE.Scene();
-    skyScene.add(sky);
-    const envRT = pmrem.fromScene(skyScene);
-    this.scene.environment = envRT.texture;
-    this.scene.environmentIntensity = 0.85;
-    skyScene.remove(sky);
     this.scene.add(sky);
-    pmrem.dispose();
-    applyEnv(envRT.texture);
-
     this.scene.fog = new THREE.FogExp2(0xb4ac97, 0.0011);   // warm dust haze
 
     // ── lights ──
     const sun = new THREE.DirectionalLight(0xfff2dc, 4.0);
-    sun.position.copy(sunDir).multiplyScalar(90);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     const s = sun.shadow.camera;
@@ -142,10 +182,92 @@ export class Battlefield {
     // warm bounce from the ground, cool fill from the sky
     const hemi = new THREE.HemisphereLight(0xa8c4d8, 0x6b5334, 0.45);
     this.scene.add(hemi);
+    this.hemi = hemi;
 
     this._buildTerrain();
+    this.applyMap(map || getMap());
+  }
+
+  /**
+   * Switch battlefield. Terrain vertices, cover, lighting and the sky are all
+   * rebuilt in place, so the scene object — and everything already parented to
+   * it, like particles and the projectile pool — stays valid.
+   */
+  applyMap(map) {
+    this.map = setMap(map.id || map);
+    const m = this.map;
+
+    // ── sky + sun bearing ──
+    const u = this.sky.material.uniforms;
+    u.turbidity.value = m.sky.turbidity;
+    u.rayleigh.value = m.sky.rayleigh;
+    u.mieCoefficient.value = m.sky.mie;
+    this.sunDir.setFromSphericalCoords(1,
+      THREE.MathUtils.degToRad(90 - m.sky.elev), THREE.MathUtils.degToRad(m.sky.azim));
+    u.sunPosition.value.copy(this.sunDir);
+    const shader = this.sky.material.userData.shader;
+    if (shader) shader.uniforms.skyGain.value = m.sky.gain;
+
+    // ── image-based lighting, regenerated from this sky ──
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const skyScene = new THREE.Scene();
+    const parent = this.sky.parent;
+    skyScene.add(this.sky);
+    const envRT = pmrem.fromScene(skyScene);
+    skyScene.remove(this.sky);
+    if (parent) parent.add(this.sky);
+    if (this.envRT) this.envRT.dispose();
+    this.envRT = envRT;
+    this.scene.environment = envRT.texture;
+    this.scene.environmentIntensity = m.env;
+    pmrem.dispose();
+    applyEnv(envRT.texture);
+
+    // ── lights, fog, tints ──
+    this.sun.color.setHex(m.sun[0]);
+    this.sun.intensity = m.sun[1];
+    this.sun.position.copy(this.sunDir).multiplyScalar(90);
+    this.hemi.color.setHex(m.hemi[0]);
+    this.hemi.groundColor.setHex(m.hemi[1]);
+    this.hemi.intensity = m.hemi[2];
+    this.scene.fog.color.setHex(m.fog[0]);
+    this.scene.fog.density = m.fog[1];
+    Assets.mat.rock.color.setHex(m.rock);
+    // ground hue is handled in the shader so a map can genuinely change biome
+    const gs = Assets.mat.ground.userData.shader;
+    if (gs) {
+      gs.uniforms.uDesat.value = m.groundDesat || 0;
+      gs.uniforms.uTint.value.setHex(m.ground);
+    } else {
+      Assets.mat.ground.color.setHex(m.ground);
+    }
+
+    // ── terrain + cover ──
+    this._refreshTerrain();
+    this._clearProps();
     this._buildProps();
     this._buildBoundary();
+    return m;
+  }
+
+  /** Re-displace the existing terrain grid for the active map. */
+  _refreshTerrain() {
+    const pos = this.terrain.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) pos.setY(i, heightAt(pos.getX(i), pos.getZ(i)));
+    pos.needsUpdate = true;
+    this.terrain.geometry.computeVertexNormals();
+    this.terrain.geometry.computeBoundingSphere();
+  }
+
+  _clearProps() {
+    for (const mesh of this.propMeshes) {
+      this.scene.remove(mesh);
+      mesh.geometry.dispose();
+    }
+    this.propMeshes.length = 0;
+    this.obstacles.length = 0;
+    this._rockGeos.length = 0;
+    this.gridMap = null;
   }
 
   _buildTerrain() {
@@ -188,6 +310,7 @@ export class Battlefield {
       const m = new THREE.Mesh(merged, Assets.mat.rock);
       m.castShadow = m.receiveShadow = true;
       this.scene.add(m);
+      this.propMeshes.push(m);
       for (const g of slice) g.dispose();
     }
     this._rockGeos.length = 0;
@@ -199,6 +322,7 @@ export class Battlefield {
    * approach lanes rather than a scatter of crates.
    */
   _buildProps() {
+    const P = this.map.props;
     const half = ARENA / 2 - 30;
     const clear = 30;                       // keep the deployment zone open
 
@@ -234,11 +358,11 @@ export class Battlefield {
     };
 
     // ── rock fields: a big anchor stone with smaller companions around it ──
-    for (let f = 0; f < 26; f++) {
-      const anchorR = rand(6, 15);
+    for (let f = 0; f < P.fields; f++) {
+      const anchorR = rand(P.anchor[0], P.anchor[1]);
       const p = tryPlace(anchorR);
       if (!p) continue;
-      const kind = Math.random() < 0.22 ? 'spire' : Math.random() < 0.3 ? 'slab' : 'boulder';
+      const kind = Math.random() < P.spire ? 'spire' : Math.random() < P.slab ? 'slab' : 'boulder';
       rock(p.x, p.z, anchorR, kind, f);
 
       const companions = randInt(2, 5);
@@ -249,16 +373,16 @@ export class Battlefield {
         const cx = p.x + Math.cos(a) * dist, cz = p.z + Math.sin(a) * dist;
         if (Math.hypot(cx, cz) < clear) continue;
         if (Math.abs(cx) > half + 20 || Math.abs(cz) > half + 20) continue;
-        rock(cx, cz, cr, Math.random() < 0.3 ? 'slab' : 'boulder', f * 10 + c);
+        rock(cx, cz, cr, Math.random() < P.slab ? 'slab' : 'boulder', f * 10 + c);
       }
     }
 
     // ── lone landmarks scattered between the fields ──
-    for (let i = 0; i < 34; i++) {
-      const r = rand(3.5, 9);
+    for (let i = 0; i < P.lone; i++) {
+      const r = rand(3.5, P.anchor[0] + 3);
       const p = tryPlace(r);
       if (!p) continue;
-      rock(p.x, p.z, r, Math.random() < 0.28 ? 'spire' : 'boulder', 200 + i);
+      rock(p.x, p.z, r, Math.random() < P.spire ? 'spire' : 'boulder', 200 + i);
     }
 
     this._flushRocks();
@@ -330,6 +454,7 @@ export class Battlefield {
       const mesh = new THREE.Mesh(ring, Assets.mat.rock);
       mesh.castShadow = mesh.receiveShadow = true;
       this.scene.add(mesh);
+      this.propMeshes.push(mesh);
     }
     this.boundaryR = R - 10;
   }

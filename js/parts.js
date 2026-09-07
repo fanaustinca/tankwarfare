@@ -105,15 +105,15 @@ export const TURRETS = [
     desc: 'The dependable main gun.' },
 
   { id: 'tur_duo', name: 'Double 105mm', cost: 640, weight: 430, hp: 165, icon: '◎', foot: [2, 1],
-    damage: 130, reload: 2.05, muzzle: 118, spread: 0.013, splash: 3.0, range: 185,
+    damage: 180, reload: 1.7, muzzle: 118, spread: 0.013, splash: 4.2, range: 185,
     barrel: { len: 2.7, rad: 0.115, count: 2, spacing: 0.30, brake: true },
     kind: 'shell', salvo: true, ring: 0.56,
     desc: 'Two shells downrange at once. Heavy mount.' },
 
-  { id: 'tur_siege', name: '155mm Siege Gun', cost: 980, weight: 810, hp: 265, icon: '✹', foot: [3, 3],
-    damage: 480, reload: 3.6, muzzle: 96, spread: 0.007, splash: 10.5, range: 250,
-    barrel: { len: 4.7, rad: 0.215, count: 1, brake: true }, kind: 'shell', ring: 1.15,
-    desc: 'Devastating. Needs a full 3×3 hull platform.' },
+  { id: 'tur_siege', name: '155mm Siege Gun', cost: 1150, weight: 860, hp: 290, icon: '✹', foot: [3, 3],
+    damage: 950, reload: 2.0, muzzle: 104, spread: 0.006, splash: 12, range: 265,
+    barrel: { len: 4.9, rad: 0.225, count: 1, brake: true }, kind: 'shell', ring: 1.15,
+    desc: 'One shell caves in a whole section of hull. Needs a 3×3 platform.' },
 
   { id: 'tur_mis', name: 'Missile Pod', cost: 460, weight: 215, hp: 85, icon: '▲', foot: [1, 1],
     damage: 250, reload: 2.7, muzzle: 52, spread: 0.004, splash: 6.5, range: 230,
